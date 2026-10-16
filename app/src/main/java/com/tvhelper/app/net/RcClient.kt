@@ -146,6 +146,7 @@ class RcClient(
                 try {
                     writeRaw(RcCodec.heartbeat())
                 } catch (t: Throwable) {
+                    Log.w(TAG, "心跳发送失败，停止心跳：${t.message}")
                     break
                 }
             }
@@ -287,8 +288,9 @@ class RcClient(
                     else -> _events.tryEmit(RcEvent.Other(type, payload))
                 }
             }
-            _events.tryEmit(RcEvent.Closed(null))
+            _events.tryEmit(RcEvent.Closed(null).also { Log.i(TAG, "读循环 EOF，连接被对端关闭") })
         } catch (t: Throwable) {
+            Log.w(TAG, "读循环异常退出：${t.javaClass.simpleName}: ${t.message}")
             _events.tryEmit(RcEvent.Closed(t))
         } finally {
             closed.set(true)

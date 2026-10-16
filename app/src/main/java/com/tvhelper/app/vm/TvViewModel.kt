@@ -88,12 +88,10 @@ class TvViewModel(
         viewModelScope.launch {
             _localIp.value = withContext(Dispatchers.IO) { NetUtils.localIpv4() }
         }
-        // 自动连接：勾选了开关且记住了上次设备
+        // 自动连接：勾选了开关且记住了上次设备（force=false 防止与 ON_RESUME 重入并发建连）
         viewModelScope.launch {
             val target = repo.autoConnectTarget() ?: return@launch
-            if (!repo.connection.value.isConnected) {
-                repo.connect(target)
-            }
+            repo.connect(target, force = false)
         }
     }
 
@@ -164,7 +162,8 @@ class TvViewModel(
             val state = repo.connection.value
             if (state.isConnected || state.phase == ConnectionPhase.CONNECTING) return@launch
             val target = repo.autoConnectTarget() ?: return@launch
-            repo.connect(target)
+            // force=false：与 init 自动连接并发时，谁先建连成功谁生效，后到者直接跳过
+            repo.connect(target, force = false)
         }
     }
 

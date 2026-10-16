@@ -40,7 +40,9 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -178,7 +180,19 @@ class TvRepository(
         )
     }
 
-    suspend fun connect(device: TvDevice): Boolean = withContext(Dispatchers.IO) {
+    /** 串行化连接：防止 init 自动连接与 ON_RESUME 重入并发建双套通道 */
+    private val connectMutex = Mutex()
+
+    suspend fun connect(device: TvDevice, force: Boolean = true): Boolean =
+        connectMutex.withLock {
+            withContext(Dispatchers.IO) {
+                // 非强制（自动重连场景）：已连接则直接视为成功，避免重复建连
+                if (!force && _connection.value.isConnected) return@withContext true
+                connectInternal(device)
+            }
+        }
+
+    private suspend fun connectInternal(device: TvDevice): Boolean = withContext(Dispatchers.IO) {
         userDisconnected = false
         reconnectAttempts = 0
         reconnectJob?.cancel()
@@ -215,7 +229,7 @@ class TvRepository(
                     is RcEvent.Closed -> {
                         if (userDisconnected) return@collect
                         // RC socket 被系统/电视断开：自动重连（退避 2s/5s/10s，最多 3 次）
-                        scheduleReconnect(device)
+                        scheduleReconnect(device, ev.cause)
                     }
                     else -> Unit
                 }
@@ -351,7 +365,8 @@ class TvRepository(
     }
 
     /** RC 断线后的自动重连：指数退避，重连期间界面显示「自动重连中」 */
-    private fun scheduleReconnect(device: TvDevice) {
+    private fun scheduleReconnect(device: TvDevice, cause: Throwable? = null) {
+        Log.i(TAG, "RC 断线 cause=${cause?.javaClass?.simpleName}: ${cause?.message}")
         if (reconnectAttempts >= reconnectBackoffMs.size) {
             _connection.value = _connection.value.copy(
                 phase = ConnectionPhase.FAILED,
