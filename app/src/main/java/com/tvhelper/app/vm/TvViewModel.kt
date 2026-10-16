@@ -89,6 +89,17 @@ class TvViewModel(
         viewModelScope.launch {
             _localIp.value = withContext(Dispatchers.IO) { NetUtils.localIpv4() }
         }
+        // 重连成功后兜底释放卡键：长按期间连接断开会导致 UP 帧发不出去，
+        // 电视端按键一直处于按下状态，输入系统被楔死（物理遥控器也失灵）
+        viewModelScope.launch {
+            var wasRcConnected = false
+            repo.connection.collect { st ->
+                if (st.rcConnected && !wasRcConnected && repeatKeyCode != null) {
+                    releaseRepeatedKey()
+                }
+                wasRcConnected = st.rcConnected
+            }
+        }
         // 自动连接：勾选了开关且记住了上次设备（force=false 防止与 ON_RESUME 重入并发建连）
         viewModelScope.launch {
             val target = repo.autoConnectTarget() ?: return@launch
@@ -200,14 +211,15 @@ class TvViewModel(
 
     private var repeatJob: Job? = null
 
-    /** 长按中（等待松手发 UP）的按键码；null = 无长按 */
+    /** 长按中（等待松手发 UP）的按键码与按下时刻；keyCode null = 无长按 */
     private var repeatKeyCode: Int? = null
+    private var repeatDownTime: Long = 0L
 
     /**
      * 长按连发：对齐物理遥控器的标准 repeat 模式——
      * 按下发一次 DOWN(repeat=0)，之后每 180ms 发一次 DOWN（repeatCount 递增），
-     * 松手时补一次 UP。相比旧实现（每 90ms 发完整 DOWN+UP 对）不再洪泛
-     * 电视端输入队列（洪泛会导致电视输入系统卡死，物理遥控器也失灵）。
+     * 松手时补一次 UP。UP 帧必须复用按下的 downTime（电视端按 downTime 配对 DOWN/UP，
+     * 配不上会造成按键卡死、电视输入系统被楔死），eventTime 用松手时刻。
      * 任一帧发送失败立即停止，避免失败后继续轰炸。
      */
     fun startKeyRepeat(keyCode: Int) {
@@ -215,6 +227,7 @@ class TvViewModel(
         repeatKeyCode = keyCode
         repeatJob = viewModelScope.launch {
             val downTime = android.os.SystemClock.uptimeMillis()
+            repeatDownTime = downTime
             if (!repo.sendKeyDown(keyCode, downTime, repeatCount = 0, eventTime = downTime)) {
                 repeatKeyCode = null
                 return@launch
@@ -232,10 +245,22 @@ class TvViewModel(
     fun stopKeyRepeat() {
         repeatJob?.cancel()
         repeatJob = null
-        repeatKeyCode?.let { code ->
-            repeatKeyCode = null
-            viewModelScope.launch {
-                repo.sendKeyUp(code, downTime = android.os.SystemClock.uptimeMillis())
+        releaseRepeatedKey()
+    }
+
+    /** 补发 UP 帧释放长按；失败（连接断开等）自动重试，重连成功后再兜底一次 */
+    private fun releaseRepeatedKey(attempt: Int = 0) {
+        val code = repeatKeyCode ?: return
+        val downTime = repeatDownTime
+        repeatKeyCode = null
+        viewModelScope.launch {
+            val now = android.os.SystemClock.uptimeMillis()
+            val ok = repo.sendKeyUp(code, downTime, eventTime = now)
+            if (!ok && attempt < 3) {
+                delay(500)
+                repeatKeyCode = code
+                repeatDownTime = downTime
+                releaseRepeatedKey(attempt + 1)
             }
         }
     }

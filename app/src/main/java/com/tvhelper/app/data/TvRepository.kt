@@ -187,8 +187,12 @@ class TvRepository(
     suspend fun connect(device: TvDevice, force: Boolean = true): Boolean =
         connectMutex.withLock {
             withContext(Dispatchers.IO) {
-                // 非强制（自动重连场景）：已连接则直接视为成功，避免重复建连
-                if (!force && _connection.value.isConnected) return@withContext true
+                val st = _connection.value
+                if (!force) {
+                    // 非强制（自动重连/自动连接场景）：已连接或正在建连都直接跳过，
+                    // 避免后到者把刚建好的连接 kill 掉（日志里「连接成功 1s 后 Socket closed」的元凶）
+                    if (st.isConnected || st.phase == ConnectionPhase.CONNECTING) return@withContext true
+                }
                 connectInternal(device)
             }
         }
@@ -229,7 +233,9 @@ class TvRepository(
                         _connection.value = _connection.value.copy(lastHeartbeatAt = System.currentTimeMillis())
                     is RcEvent.Closed -> {
                         if (userDisconnected) return@collect
-                        // RC socket 被系统/电视断开：自动重连（退避 2s/5s/10s，最多 3 次）
+                        // 旧客户端的 Closed 事件（已被新连接取代）不处理，防止重连风暴
+                        if (rcClient !== rc) return@collect
+                        // RC socket 被系统/电视断开：自动重连（退避 2s/5s/10s…永不放弃）
                         scheduleReconnect(device, ev.cause)
                     }
                     else -> Unit
@@ -365,20 +371,14 @@ class TvRepository(
         )
     }
 
-    /** RC 断线后的自动重连：指数退避，重连期间界面显示「自动重连中」 */
+    /**
+     * RC 断线后的自动重连：指数退避（2s/5s/10s 封顶），永不放弃——
+     * 存活持久化：只要未主动断开就持续重试，直到连上或用户主动断开。
+     */
     private fun scheduleReconnect(device: TvDevice, cause: Throwable? = null) {
         Log.i(TAG, "RC 断线 cause=${cause?.javaClass?.simpleName}: ${cause?.message}")
-        if (reconnectAttempts >= reconnectBackoffMs.size) {
-            _connection.value = _connection.value.copy(
-                phase = ConnectionPhase.FAILED,
-                rcConnected = false,
-                message = "与电视的连接已断开（自动重连未成功）",
-            )
-            ConnectionService.stop(appContext)
-            return
-        }
         val attempt = ++reconnectAttempts
-        val backoff = reconnectBackoffMs[attempt - 1]
+        val backoff = reconnectBackoffMs[minOf(attempt - 1, reconnectBackoffMs.size - 1)]
         Log.i(TAG, "RC 断线，${backoff / 1000}s 后自动重连（第 $attempt 次）")
         _connection.value = _connection.value.copy(
             phase = ConnectionPhase.CONNECTING,
@@ -389,7 +389,10 @@ class TvRepository(
         reconnectJob = scope.launch {
             delay(backoff)
             if (userDisconnected) return@launch
-            runCatching { connect(device) }
+            // 先清空引用再连接：connectInternal 会 cancel reconnectJob，
+            // 不清空会把自己 cancel 掉（日志「自动重连失败：StandaloneCoroutine was cancelled」）
+            reconnectJob = null
+            runCatching { connect(device, force = false) }
                 .onFailure { Log.w(TAG, "自动重连失败：${it.message}") }
         }
     }
@@ -641,10 +644,10 @@ class TvRepository(
         }
     }
 
-    suspend fun sendKeyUp(keyCode: Int, downTime: Long): Boolean {
+    suspend fun sendKeyUp(keyCode: Int, downTime: Long, eventTime: Long = downTime + 120): Boolean {
         val client = rc ?: return false
         return try {
-            client.sendKeyRawFrames(listOf(RcKeyCodec.frameUp(keyCode, downTime)))
+            client.sendKeyRawFrames(listOf(RcKeyCodec.frameUp(keyCode, downTime, eventTime = eventTime)))
             true
         } catch (t: Throwable) {
             Log.w(TAG, "按键 UP 发送失败：${t.message}")

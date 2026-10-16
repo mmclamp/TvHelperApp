@@ -64,6 +64,9 @@ class RcClient(
         const val HEARTBEAT_INTERVAL_MS = 10_000L
         const val VERSION_WAIT_MS = 4_000L
         const val CONNECT_TIMEOUT_MS = 6_000
+
+        /** 收超时看门狗：超过该时长未收到任何帧（电视心跳 10s 一跳）判为链路假死，主动断开触发重连 */
+        const val RX_STALE_MS = 35_000L
         private const val TAG = "RcClient"
     }
 
@@ -100,6 +103,10 @@ class RcClient(
     var lastServerBeatAt: Long = 0L
         private set
 
+    /** 最近一次收到任何帧的时刻（存活检测用） */
+    @Volatile
+    private var lastRxAt: Long = 0L
+
     @Volatile
     var negotiated: RcVersionCodec.RcVersionResponse? = null
         private set
@@ -119,6 +126,7 @@ class RcClient(
 
         val s = Socket()
         s.tcpNoDelay = true
+        s.keepAlive = true
         s.soTimeout = 0
         try {
             s.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
@@ -130,6 +138,7 @@ class RcClient(
         socket = s
         input = s.getInputStream().buffered(8 * 1024)
         output = s.getOutputStream()
+        lastRxAt = System.currentTimeMillis()
 
         // 2) 就绪握手
         writeDirect(RcCodec.ready())
@@ -139,10 +148,18 @@ class RcClient(
 
         // 4) 读循环
         readerJob = scope.launch { readLoop() }
-        // 5) 心跳
+        // 5) 心跳 + 存活看门狗
         heartbeatJob = scope.launch {
             while (isActive) {
                 delay(HEARTBEAT_INTERVAL_MS)
+                // 链路假死检测：电视心跳 10s 一跳，35s 收不到任何帧说明链路已死但 TCP 未报错，
+                // 主动关 socket 触发 Closed → 自动重连，避免僵尸连接上按键无声失败
+                val idle = System.currentTimeMillis() - lastRxAt
+                if (idle > RX_STALE_MS) {
+                    Log.w(TAG, "链路假死：${idle / 1000}s 未收到任何帧，主动断开触发重连")
+                    runCatching { socket?.close() }
+                    break
+                }
                 try {
                     writeRaw(RcCodec.heartbeat())
                 } catch (t: Throwable) {
@@ -272,6 +289,7 @@ class RcClient(
                 if (len > RcCodec.MAX_PAYLOAD) throw RcException("RC 非法长度 $len")
                 val payload = if (len > 0) readExactly(ins, len) ?: break else ByteArray(0)
                 val frame = decryptIfNeeded(Bytes.concat(header, payload))
+                lastRxAt = System.currentTimeMillis()
 
                 when (type) {
                     RcCodec.TYPE_HEARTBEAT -> {
