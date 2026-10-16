@@ -51,6 +51,7 @@ import androidx.compose.ui.unit.dp
 import com.tvhelper.app.data.ConnectionPhase
 import com.tvhelper.app.data.ConnectionState
 import com.tvhelper.app.data.PinnedApp
+import com.tvhelper.app.data.toPinned
 import com.tvhelper.app.protocol.udt.RemoteApp
 import com.tvhelper.app.ui.common.EmptyHint
 import com.tvhelper.app.ui.common.PillButton
@@ -61,7 +62,7 @@ import com.tvhelper.app.ui.theme.TvColors
 import com.tvhelper.app.vm.TvViewModel
 
 @Composable
-fun HomeScreen(vm: TvViewModel, onGoConnect: () -> Unit) {
+fun HomeScreen(vm: TvViewModel, onGoConnect: () -> Unit, onGoInstall: () -> Unit) {
     val connection by vm.connection.collectAsState()
     val apps by vm.installedApps.collectAsState()
     val loading by vm.appsLoading.collectAsState()
@@ -71,6 +72,7 @@ fun HomeScreen(vm: TvViewModel, onGoConnect: () -> Unit) {
 
     var query by remember { mutableStateOf("") }
     var actionTarget by remember { mutableStateOf<PinnedApp?>(null) }
+    var appActionTarget by remember { mutableStateOf<RemoteApp?>(null) }
 
     val filtered = remember(apps, query) {
         if (query.isBlank()) apps
@@ -89,7 +91,12 @@ fun HomeScreen(vm: TvViewModel, onGoConnect: () -> Unit) {
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 28.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        item { DeviceStatusCard(connection, onDisconnect = { vm.disconnect() }, onGoConnect = onGoConnect) }
+        item { DeviceStatusCard(
+            connection = connection,
+            onDisconnect = { vm.disconnect() },
+            onGoConnect = onGoConnect,
+            onGoInstall = onGoInstall,
+        ) }
 
         item {
             SectionTitle("快捷打开", trailing = {
@@ -169,11 +176,13 @@ fun HomeScreen(vm: TvViewModel, onGoConnect: () -> Unit) {
                     onOpen = { vm.openApp(app) },
                     onTogglePin = { vm.togglePin(app) },
                     onEnsureIcon = { vm.ensureIcon(app.packageName) },
+                    onLongPress = { appActionTarget = app },
                 )
             }
         }
     }
 
+    // 快捷打开长按菜单（排序/取消固定）
     actionTarget?.let { target ->
         val index = pinned.indexOfFirst { it.packageName == target.packageName }
         AlertDialog(
@@ -219,6 +228,41 @@ fun HomeScreen(vm: TvViewModel, onGoConnect: () -> Unit) {
             },
         )
     }
+
+    // 应用列表长按菜单（打开/固定/卸载）
+    appActionTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { appActionTarget = null },
+            title = { Text(target.displayName) },
+            text = {
+                Column {
+                    Text(
+                        target.packageName,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    TextButton(onClick = {
+                        appActionTarget = null
+                        vm.openApp(target)
+                    }) { Text("打开") }
+                    TextButton(onClick = {
+                        appActionTarget = null
+                        vm.togglePin(target.toPinned())
+                    }) { Text(if (target.packageName in pinnedPkgs) "取消固定" else "固定到快捷") }
+                    TextButton(onClick = {
+                        appActionTarget = null
+                        vm.uninstallApp(target)
+                    }) {
+                        Text("卸载", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { appActionTarget = null }) { Text("关闭") }
+            },
+        )
+    }
 }
 
 @Composable
@@ -226,6 +270,7 @@ private fun DeviceStatusCard(
     connection: ConnectionState,
     onDisconnect: () -> Unit,
     onGoConnect: () -> Unit,
+    onGoInstall: () -> Unit,
 ) {
     // 连接状态渐变英雄卡：连接中用品牌蓝渐变，未连接用柔和表面色
     val connected = connection.isConnected
@@ -300,7 +345,10 @@ private fun DeviceStatusCard(
                     }
                 }
                 if (connected) {
-                    PillButton("断开", onClick = onDisconnect)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        PillButton("安装 APK", onClick = onGoInstall)
+                        PillButton("断开", onClick = onDisconnect)
+                    }
                 } else {
                     PillButton("去连接", onClick = onGoConnect)
                 }
@@ -454,6 +502,7 @@ private fun AppIconBox(iconBytes: ByteArray?, initial: String, size: Int) {
 }
 
 @Composable
+@OptIn(ExperimentalFoundationApi::class)
 private fun AppRow(
     app: RemoteApp,
     iconBytes: ByteArray?,
@@ -461,13 +510,20 @@ private fun AppRow(
     onOpen: () -> Unit,
     onTogglePin: () -> Unit,
     onEnsureIcon: () -> Unit,
+    onLongPress: () -> Unit,
 ) {
     // 图标懒加载：行可见且无图标时请求一次（repo 内部有缓存与去重）
     LaunchedEffect(app.packageName, iconBytes == null) {
         if (iconBytes == null) onEnsureIcon()
     }
     Surface(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .combinedClickable(
+                onClick = onOpen,
+                onLongClick = onLongPress,
+            ),
         shape = RoundedCornerShape(14.dp),
         color = MaterialTheme.colorScheme.surface,
         tonalElevation = 1.dp,

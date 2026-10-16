@@ -62,7 +62,10 @@ private enum class Tab(val label: String, val icon: ImageVector) {
     REMOTE("遥控", Icons.Default.PlayArrow),
     INSTALL("安装", Icons.Default.Add),
     CONNECT("连接", Icons.Default.Search),
-    SETTINGS("设置", Icons.Default.Settings),
+    SETTINGS("设置", Icons.Default.Settings);
+
+    /** 不在底部栏显示，从首页「安装 APK」按钮进入 */
+    val showInBar: Boolean get() = this != INSTALL
 }
 
 @Composable
@@ -109,7 +112,7 @@ private fun AppContent(vm: TvViewModel) {
     Scaffold(
         bottomBar = {
             NavigationBar {
-                Tab.entries.forEach { t ->
+                Tab.entries.filter { it.showInBar }.forEach { t ->
                     NavigationBarItem(
                         selected = tab == t,
                         onClick = { tab = t },
@@ -126,7 +129,11 @@ private fun AppContent(vm: TvViewModel) {
                 .padding(inner)
         ) {
             when (tab) {
-                Tab.HOME -> HomeScreen(vm = vm, onGoConnect = { tab = Tab.CONNECT })
+                Tab.HOME -> HomeScreen(
+                    vm = vm,
+                    onGoConnect = { tab = Tab.CONNECT },
+                    onGoInstall = { tab = Tab.INSTALL },
+                )
                 Tab.REMOTE -> RemoteScreen(vm = vm)
                 Tab.INSTALL -> InstallScreen(vm = vm)
                 Tab.CONNECT -> ConnectScreen(vm = vm)

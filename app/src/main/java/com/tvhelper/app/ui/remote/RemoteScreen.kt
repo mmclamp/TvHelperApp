@@ -353,7 +353,39 @@ private fun PowerButton(vm: TvViewModel, enabled: Boolean) {
         contentColor = TvColors.danger,
         borderColor = TvColors.danger.copy(alpha = 0.4f),
     ) {
-        Text("⏻", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        PowerIcon(tint = TvColors.danger, modifier = Modifier.size(26.dp))
+    }
+}
+
+/** 自绘电源图标：顶部缺口圆环 + 竖线（icons-core 无 PowerSettingsNew） */
+@Composable
+private fun PowerIcon(tint: androidx.compose.ui.graphics.Color, modifier: Modifier = Modifier) {
+    androidx.compose.foundation.Canvas(modifier = modifier) {
+        val stroke = size.minDimension * 0.115f
+        val cx = size.width / 2f
+        val r = (size.minDimension - stroke) / 2f
+        val arcStyle = androidx.compose.ui.graphics.drawscope.Stroke(
+            width = stroke,
+            cap = androidx.compose.ui.graphics.StrokeCap.Round,
+        )
+        // 圆环：从顶部留出缺口（-50° 到 230°，缺口朝上）
+        drawArc(
+            color = tint,
+            startAngle = -50f,
+            sweepAngle = 280f,
+            useCenter = false,
+            topLeft = androidx.compose.ui.geometry.Offset(cx - r, size.height / 2f - r),
+            size = androidx.compose.ui.geometry.Size(r * 2f, r * 2f),
+            style = arcStyle,
+        )
+        // 竖线：从顶部中间向下到圆心上方
+        drawLine(
+            color = tint,
+            start = androidx.compose.ui.geometry.Offset(cx, stroke * 0.4f),
+            end = androidx.compose.ui.geometry.Offset(cx, size.height * 0.52f),
+            strokeWidth = stroke,
+            cap = androidx.compose.ui.graphics.StrokeCap.Round,
+        )
     }
 }
 
