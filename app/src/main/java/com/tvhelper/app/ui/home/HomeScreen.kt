@@ -1,9 +1,11 @@
 package com.tvhelper.app.ui.home
 
 import android.graphics.BitmapFactory
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.Arrangement
@@ -23,10 +25,19 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -182,86 +193,138 @@ fun HomeScreen(vm: TvViewModel, onGoConnect: () -> Unit, onGoInstall: () -> Unit
         }
     }
 
-    // 快捷打开长按菜单（排序/取消固定）
+    // 快捷打开长按菜单（排序/取消固定）——底部动作面板
     actionTarget?.let { target ->
         val index = pinned.indexOfFirst { it.packageName == target.packageName }
-        AlertDialog(
-            onDismissRequest = { actionTarget = null },
-            title = { Text(target.displayName) },
-            text = {
-                Column {
-                    Text(
-                        target.packageName,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    TextButton(onClick = {
-                        actionTarget = null
-                        vm.openPinned(target)
-                    }) { Text("打开") }
-                    TextButton(onClick = {
-                        actionTarget = null
-                        vm.togglePin(target)
-                    }) { Text("取消固定") }
-                    Row {
-                        TextButton(
-                            enabled = index > 0,
-                            onClick = {
-                                actionTarget = null
-                                vm.movePin(index, index - 1)
-                            },
-                        ) { Text("前移") }
-                        Spacer(Modifier.width(8.dp))
-                        TextButton(
-                            enabled = index >= 0 && index < pinned.size - 1,
-                            onClick = {
-                                actionTarget = null
-                                vm.movePin(index, index + 1)
-                            },
-                        ) { Text("后移") }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { actionTarget = null }) { Text("关闭") }
-            },
+        ActionSheet(
+            title = target.displayName,
+            subtitle = target.packageName,
+            onDismiss = { actionTarget = null },
+            items = listOf(
+                ActionSheetItem(Icons.Default.PlayArrow, "打开") {
+                    vm.openPinned(target)
+                },
+                ActionSheetItem(Icons.Default.Close, "取消固定") {
+                    vm.togglePin(target)
+                },
+                ActionSheetItem(
+                    Icons.Default.KeyboardArrowUp, "前移",
+                    enabled = index > 0,
+                ) {
+                    vm.movePin(index, index - 1)
+                },
+                ActionSheetItem(
+                    Icons.Default.KeyboardArrowDown, "后移",
+                    enabled = index >= 0 && index < pinned.size - 1,
+                ) {
+                    vm.movePin(index, index + 1)
+                },
+            ),
+            afterAction = { actionTarget = null },
         )
     }
 
-    // 应用列表长按菜单（打开/固定/卸载）
+    // 应用列表长按菜单（打开/固定/卸载）——底部动作面板
     appActionTarget?.let { target ->
-        AlertDialog(
-            onDismissRequest = { appActionTarget = null },
-            title = { Text(target.displayName) },
-            text = {
-                Column {
-                    Text(
-                        target.packageName,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    TextButton(onClick = {
-                        appActionTarget = null
-                        vm.openApp(target)
-                    }) { Text("打开") }
-                    TextButton(onClick = {
-                        appActionTarget = null
-                        vm.togglePin(target.toPinned())
-                    }) { Text(if (target.packageName in pinnedPkgs) "取消固定" else "固定到快捷") }
-                    TextButton(onClick = {
-                        appActionTarget = null
-                        vm.uninstallApp(target)
-                    }) {
-                        Text("卸载", color = MaterialTheme.colorScheme.error)
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { appActionTarget = null }) { Text("关闭") }
-            },
+        val isPinned = target.packageName in pinnedPkgs
+        ActionSheet(
+            title = target.displayName,
+            subtitle = target.packageName,
+            onDismiss = { appActionTarget = null },
+            items = listOf(
+                ActionSheetItem(Icons.Default.PlayArrow, "在电视上打开") {
+                    vm.openApp(target)
+                },
+                ActionSheetItem(
+                    if (isPinned) Icons.Default.Close else Icons.Default.Star,
+                    if (isPinned) "取消固定" else "固定到快捷",
+                ) {
+                    vm.togglePin(target.toPinned())
+                },
+                ActionSheetItem(
+                    Icons.Default.Delete, "卸载",
+                    tint = MaterialTheme.colorScheme.error,
+                ) {
+                    vm.uninstallApp(target)
+                },
+            ),
+            afterAction = { appActionTarget = null },
         )
+    }
+}
+
+/** 底部动作面板数据项 */
+private data class ActionSheetItem(
+    val icon: androidx.compose.ui.graphics.vector.ImageVector,
+    val label: String,
+    val tint: Color? = null,
+    val enabled: Boolean = true,
+    val action: () -> Unit,
+)
+
+/** 底部动作面板：图标 + 文案的动作行列表（替代原 AlertDialog） */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+private fun ActionSheet(
+    title: String,
+    subtitle: String,
+    items: List<ActionSheetItem>,
+    onDismiss: () -> Unit,
+    afterAction: () -> Unit,
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = MaterialTheme.colorScheme.surface,
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(start = 20.dp, end = 20.dp, bottom = 28.dp)
+        ) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(10.dp))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+            items.forEach { item ->
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable(enabled = item.enabled) {
+                            afterAction()
+                            item.action()
+                        }
+                        .padding(horizontal = 4.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        item.icon,
+                        contentDescription = item.label,
+                        tint = item.tint ?: MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(22.dp),
+                    )
+                    Spacer(Modifier.width(16.dp))
+                    Text(
+                        item.label,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = when {
+                            !item.enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                            else -> item.tint ?: MaterialTheme.colorScheme.onSurface
+                        },
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -344,12 +407,7 @@ private fun DeviceStatusCard(
                         )
                     }
                 }
-                if (connected) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        PillButton("安装 APK", onClick = onGoInstall)
-                        PillButton("断开", onClick = onDisconnect)
-                    }
-                } else {
+                if (!connected) {
                     PillButton("去连接", onClick = onGoConnect)
                 }
             }
@@ -372,7 +430,61 @@ private fun DeviceStatusCard(
                         color = Color.White.copy(alpha = 0.75f),
                     )
                 }
+                Spacer(Modifier.height(14.dp))
+                // 底部操作行：等宽半透明按钮
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    HeroActionButton(
+                        icon = Icons.Default.Add,
+                        label = "安装 APK",
+                        modifier = Modifier.weight(1f),
+                        onClick = onGoInstall,
+                    )
+                    HeroActionButton(
+                        icon = Icons.Default.Close,
+                        label = "断开连接",
+                        modifier = Modifier.weight(1f),
+                        onClick = onDisconnect,
+                    )
+                }
             }
+        }
+    }
+}
+
+/** 英雄卡底部操作按钮：白色半透明底 + 描边，适配渐变背景 */
+@Composable
+private fun HeroActionButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    Surface(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(12.dp),
+        color = Color.White.copy(alpha = 0.20f),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.35f)),
+    ) {
+        Row(
+            Modifier.padding(vertical = 11.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                icon,
+                contentDescription = label,
+                tint = Color.White,
+                modifier = Modifier.size(16.dp),
+            )
+            Spacer(Modifier.width(7.dp))
+            Text(
+                label,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = Color.White,
+            )
         }
     }
 }
