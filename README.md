@@ -2,7 +2,16 @@
 
 一个纯 Kotlin + Jetpack Compose 的 Android 应用，用于在同一局域网内连接小米电视、遥控电视、打开电视上已安装的应用，以及把手机里的 APK 推送到电视安装。
 
-本工程是对「小米电视助手 v2.7.6」的**协议级仿写**：不依赖小米账号、不依赖原版 APK，直接按逆向还原出的两套私有协议与电视通信。
+本工程是对「小米电视助手 v2.7.6」的**协议级仿写**：不依赖小米账号、不依赖原版 APK，直接按逆向还原出的私有协议与电视通信。当前版本 **1.6.0**（versionCode 13），已在小米电视真机端到端联调通过。
+
+## 功能一览
+
+- **连接**：mDNS 扫描 + 手动输入 IP，记住上次设备；支持自动连接（启动/回前台直连，不跳连接页）
+- **遥控**：方向键 / OK / 返回 / 主页 / 菜单 / 音量± / 静音 / 电源，支持长按连发（标准 repeat 模式）；触控板（部分固件不开放）
+- **应用管理**：枚举已安装应用（含真实图标懒加载 + 磁盘缓存）、打开、固定到首页宫格、长按弹出底部动作面板（打开/固定/上移/下移/卸载）
+- **APK 安装**：手机起 HTTP 服务托管 APK，电视端拉取并弹官方确认框
+- **保活**：前台服务常驻通知 + 断线自动重连（退避 2s/5s/10s）+ 回前台自动重连
+- **设置**：深浅色主题切换（跟随系统/浅色/深色）、自动连接开关
 
 ---
 
@@ -12,17 +21,17 @@
 | --- | --- | --- |
 | 电视发现 | mDNS/UDP 5353 | 浏览 `_rc._tcp.local.`（30612）与 `_milink._tcp.local.`（TXT 带 `tcp=6093`/`udp=6094`/`mac`） |
 | 手动输入 IP 连接 | TCP 探测 | 并行探测 30612 / 6093 / 6088，任一开放即认为「像电视」 |
-| 遥控按键 | RC / TCP 30612 | `SendKey`（type 4）：TLV 携带 metaState/action/keyCode/downTime/eventTime/deviceId/source |
-| 触控板 | RC / TCP 30612 | `SendTouch`（type 6）：每指 13 个 TLV 字段（index/id/toolType/orientation/pressure/size/…/x/y） |
+| 遥控按键 | RC / TCP 30612 | `SendKey`（type 4）：TLV 携带 metaState/action/keyCode/**scanCode**/repeatCount/downTime/eventTime/deviceId/source，时间戳用 uptimeMillis |
+| 触控板 | RC / TCP 30612 | `SendTouch`（type 6）：每指 13 个 TLV 字段 |
 | 打开电视上的 App | UDT / TCP 6093 (ctrl) | `openApp`，参数 `[时间戳, 包名]`，`status == 0` 为成功 |
-| 枚举已安装 App | UDT / TCP 6093 (data) | `getInstalledPackages`（大返回走 data 连接，可分页）；返回 `PkgInfos[].appInfo` 内嵌 JSON 字符串 |
-| 首页 Pin 应用 | 本地 | DataStore 持久化包名 + label，首页 4 列宫格 |
+| 枚举已安装 App | UDT / TCP 6093 (data) | `getInstalledPackages`（大返回走 data 连接，分页）；返回 `PkgInfos[].appInfo` 内嵌 JSON |
+| 应用图标 | UDT / TCP 6093 (data) | `getPackageInfo(pkg, filter=3, [31,63])`，PNG 字节走 data 段 |
 | 卸载应用 | UDT / TCP 6093 (ctrl) | `uninstallApp` |
 | 安装本地 APK | UDT + 手机侧 HTTP | 手机起 `ServerSocket` 托管 APK → `installUrlApp(url)` → 电视自行拉取并弹官方确认框 |
 
 ### 为什么不用小米账号
 
-逆向确认：`openApp` / `getInstalledPackages` / `installUrlApp` 走的是 6 参 `postCall`（`z11 = false`），**不触发安全芯片签名**，因此整条链路无需登录小米账号。
+逆向确认：`openApp` / `getInstalledPackages` / `installUrlApp` / `getPackageInfo` 走的是 6 参 `postCall`（`z11 = false`），**不触发安全芯片签名**，因此整条链路无需登录小米账号。
 
 ---
 
@@ -36,16 +45,7 @@
 [type 1B][payloadLen 2B BE][payload ≤ 1500B]
 ```
 
-关键 type：
-
-| type | 含义 |
-| --- | --- |
-| 2 | 心跳，payload `{2,0,0}` |
-| 3 | 播放控制 |
-| 4 | 按键 `SendKey` |
-| 5 | 版本/密钥协商 |
-| 6 | 触摸 `SendTouch` |
-| 61 (`0x3D`) | 连接就绪 |
+关键 type：`2` 心跳（payload `{2,0,0}`，10s 间隔）、`3` 播放控制、`4` 按键、`5` 版本/密钥协商、`6` 触摸、`61 (0x3D)` 连接就绪。
 
 **SendKey payload 布局**：
 
@@ -53,27 +53,46 @@
 [subType=01][msgId 4B BE][dataLen 2B BE][TLV…]
 ```
 
-其中 header 里那 4 个「保留字节」实为**包级自增 msgId**。TLV 子码顺序：
+header 里那 4 个「保留字节」实为**包级自增 msgId**。TLV 子码：`01` metaState(i32) · `02` action · `03` keyCode · `04` scanCode · `05` repeatCount · `06` flags · `07` downTime(i64) · `08` eventTime(i64) · `0A` deviceId · `0B` source · `09` characters · `0C` extra。
 
-`01` metaState(i32) · `02` action · `03` keyCode · `04` scanCode · `05` repeatCount · `06` flags · `07` downTime(i64) · `08` eventTime(i64) · `0A` deviceId · `0B` source · `09` characters(u16 长度 + UTF-8) · `0C` extra
+**按键帧三条铁律**（v1.6.0 真机踩坑得出，违反会导致音量无效甚至电视输入系统卡死）：
 
-**SendTouch** 的 TLV 子码对应 Netty opcode 常量：`04` downTime(i64)、`05` eventTime(i64)、`02` action、`0C` pointerCount，每指 `0D` index / `0E` id / `0F` toolType / `10` orientation(f32) / `11` pressure / `12` size / `13` toolMajor / `14` toolMinor / `15` touchMajor / `16` touchMinor / `1B` x(f32) / `17` y(f32)，尾部 `01` metaState / `08` buttonState / `09` xPrecision / `0A` yPrecision / `06` deviceId / `0B` edgeFlags / `07` source / `03` flags。
+1. `downTime`/`eventTime` 必须用 `SystemClock.uptimeMillis()`，**绝不能用 `currentTimeMillis()`**（wall clock 巨值会让电视端输入队列时间判断异常）
+2. `scanCode` 必须填真实 Linux scancode（音量 115/114、方向 103/108/105/106、OK 352、电源 116、返回 158、主页 102 等），电视端部分处理依赖它
+3. 长按连发必须走**标准 repeat 模式**：按下发 1 帧 DOWN，之后每 180ms 发递增 `repeatCount` 的 DOWN，松手补一次 UP。**绝不能每次发完整 DOWN+UP 对**——会洪泛电视端输入队列，导致连物理遥控器都失灵
 
-> 注意 `09` 在按键里是 characters、在触摸里是 xPrecision，`0C` 在按键里是 extra、在触摸里是 pointerCount —— 同名子码语义随 type 变化，不能共用解析器。
+**SendTouch** 的 TLV 子码：`04` downTime(i64)、`05` eventTime(i64)、`02` action、`0C` pointerCount，每指 `0D` index / `0E` id / `0F` toolType / `10` orientation(f32) / `11` pressure / `12` size / `13`-`16` 几何量 / `1B` x(f32) / `17` y(f32)，尾部 `01` metaState / `08` buttonState / `09` xPrecision / `0A` yPrecision / `06` deviceId / `0B` edgeFlags / `07` source / `03` flags。
 
-**版本协商（type 5）**：请求 `code=1` + TLV(`01`+version i32、`02`+u16+版本文字、`04`+u16+extra JSON)；响应 `code=2` + TLV(`01`+version、`03`+1B 结果、`04`+u16+extra)。
+> `09` 在按键里是 characters、在触摸里是 xPrecision；`0C` 在按键里是 extra、在触摸里是 pointerCount——同名子码语义随 type 变化，不能共用解析器。
 
-当电视版本 > `0x01000200` 时，响应 extra 里会下发 RSA 加密的 `secretKey`，用它派生 AES/ECB/PKCS5 会话密钥加密后续帧。**解密需要手机本地授权文件里的 RSA 私钥（由小米账号 AirKan 授权下发），本 App 不实现该链路**，遇到这类固件会在首页显式给出警告。
+**版本协商（type 5）**：请求 `code=1` + TLV(`01`+version i32、`02`+u16+版本文字、`04`+u16+extra JSON)；响应 `code=2` + TLV(`01`+version、`03`+1B 结果、`04`+u16+extra)。当电视版本 > `0x01000200` 时，响应 extra 里下发 RSA 加密的 `secretKey`，派生 AES/ECB/PKCS5 会话密钥加密后续帧。**解密需手机本地授权文件里的 RSA 私钥**（小米账号 AirKan 授权下发，本 App 不实现该链路，遇到会在首页显式警告）。
 
 ### 2.2 UDT（milink，TCP 6093）
 
-ctrl + data 双连接（本地绑定 1025）。帧结构：
+ctrl + data 双连接（本地绑定 1025）。消息层帧结构：
 
 ```
 [ctrlLen u32BE][dataLen u32BE][tailLen u32BE][ctrl JSON][data bytes][tail JSON]
 ```
 
-ctrl JSON 要点：
+**会话握手**（逆向 `o6.b` 得出，缺这步所有加密请求被电视 RST）：TCP 建连后立即发送
+
+```
+payload = {0,0,0,0,5, ctrl?0:1, appId BE×2}   # 10 字节，appId=1025=0x0401
+外层头 src/dst = 0
+```
+
+**UDTPacket 16 字节分帧头**（所有帧套在外面）：
+
+```
+[0]=0x55  [1]=0x10|(more<<3)  [7]=0x10
+[8..11]=片长 BE  [12..13]=srcAppId  [14..15]=dstAppId
+ctrl 单片上限 102400；data 分片 1440
+```
+
+读端遇到 type=0 的控制帧直接吞掉，不进消息层。
+
+**ctrl JSON 要点**：
 
 - 外层键名是 **`action`**，不是 `type`；`control.type == 0` 表示方法调用
 - `requestId` 形如 `<appVersionCode>:<uuid>`
@@ -89,28 +108,31 @@ ctrl JSON 要点：
 ```
 TvHelperApp/
 ├── app/src/main/java/com/tvhelper/app/
-│   ├── MainActivity.kt              # 四页底部导航 + Toast 消费
+│   ├── MainActivity.kt              # Tab 导航（HOME/REMOTE/SETTINGS，INSTALL 走首页按钮）+ 通知权限 + ON_RESUME 自动重连
 │   ├── TvHelperApp.kt               # Application，持有 AppContainer
 │   ├── protocol/                    # 纯 Kotlin 协议层（无 Android 依赖，可 JVM 单测）
-│   │   ├── Bytes.kt                 # 大端编解码工具
+│   │   ├── Bytes.kt / AirkanCrypto.kt（AES 会话加密）
+│   │   ├── airkan/                  # 授权文件解析（RSA）
 │   │   ├── rc/{RcCodec,RcKeyCodec,RcTouchCodec,RcVersionCodec}.kt
-│   │   └── udt/{UdtCodec,UdtMethods}.kt
+│   │   └── udt/{UdtCodec,UdtMethods}.kt   # 含会话握手帧 + UDTPacket 分帧
 │   ├── net/                         # 连接层
 │   │   ├── NetUtils.kt / IpProbe.kt / MdnsDiscovery.kt
-│   │   ├── RcClient.kt              # 30612：就绪帧 → 版本请求 → 读循环 → 10s 心跳
-│   │   ├── UdtClient.kt             # 6093：双连接、requestId 匹配、分页拼装、反向 RPC 应答
-│   │   └── TvApi.kt                 # UDT 业务封装
+│   │   ├── AirkanAuthClient.kt      # 授权
+│   │   ├── RcClient.kt              # 30612：就绪帧 → 版本请求 → 加密 → 读循环 → 10s 心跳
+│   │   ├── UdtClient.kt             # 6093：双连接、握手、分帧、requestId 匹配、分页拼装、反向 RPC
+│   │   └── TvApi.kt                 # UDT 业务封装（含 getPackageIcon）
 │   ├── apkserver/ApkHttpServer.kt   # 极简 HTTP（GET/HEAD + Range），托管 APK 给电视下载
-│   ├── data/                        # Models / SettingsStore(DataStore) / TvRepository(编排)
+│   ├── data/                        # Models / SettingsStore(DataStore) / PairingStore / TvRepository(编排+图标缓存+断线重连)
+│   ├── service/ConnectionService.kt # 前台保活服务（connectedDevice 类型）
 │   ├── di/AppContainer.kt           # 手写单例容器
-│   ├── vm/TvViewModel.kt            # UI 状态编排（含按键长按连发 90ms）
-│   └── ui/                          # Compose：theme / common / connect / home / remote / install
-└── app/src/test/java/.../ProtocolTest.kt   # 17 个协议黄金测试
+│   ├── vm/TvViewModel.kt            # UI 状态编排（长按标准 repeat 连发、自动连接）
+│   └── ui/                          # Compose：theme / common / connect / home / remote / install / settings
+└── app/src/test/java/.../           # 34 个 JVM 协议测试（ProtocolTest/AirkanCryptoTest/UdtPacketTest）
 ```
 
-架构分层：`UI → ViewModel → Repository → (RcClient / UdtClient / ApkHttpServer)`。协议层完全无 Android 依赖，因此能用纯 JVM 单测做字节级校验。
+架构分层：`UI → ViewModel → Repository → (RcClient / UdtClient / ApkHttpServer / ConnectionService)`。协议层完全无 Android 依赖，能用纯 JVM 单测做字节级校验。
 
-> 方案原稿写的是 Hilt + Ktor；实现时改为**手写 `AppContainer`**（避免注解处理器，编译链更短）和**`ServerSocket` 自实现 HTTP**（只需 GET/HEAD + Range，少一个重依赖）。分层不变，后续要换回 Hilt/Ktor 不影响现有代码。
+> 方案原稿写的是 Hilt + Ktor；实现改为**手写 `AppContainer`**（避免注解处理器）和**`ServerSocket` 自实现 HTTP**（只需 GET/HEAD + Range）。分层不变。
 
 ---
 
@@ -123,82 +145,80 @@ export JAVA_HOME=$(/usr/libexec/java_home -v 17)
 ./gradlew :app:testDebugUnitTest :app:assembleDebug
 ```
 
-产物：`app/build/outputs/apk/debug/app-debug.apk`
-
-`local.properties` 里的 `sdk.dir` 与 `gradle.properties` 里的 `org.gradle.java.home` 按本机实际路径填写。
+产物：`app/build/outputs/apk/debug/app-debug.apk`。`local.properties` 的 `sdk.dir` 与 `gradle.properties` 的 `org.gradle.java.home` 按本机实际路径填写。
 
 ---
 
-## 五、线程模型（重要）
+## 五、线程与并发模型
 
-Android 不允许在主线程做网络 I/O，否则抛 `NetworkOnMainThreadException`。
-`viewModelScope` 默认跑在 `Dispatchers.Main`，所以**所有 socket 操作都必须显式切到 IO**：
+Android 不允许主线程网络 I/O，所有 socket 操作内部显式切 `Dispatchers.IO`（RcClient/UdtClient 的 connect/writeRaw、TvRepository 的 connect/probeAndConnect/installApk、IpProbe 等），调用方无需关心。
 
-| 层 | 处理方式 |
-| --- | --- |
-| `RcClient.connect()` / `writeRaw()` | 内部 `withContext(Dispatchers.IO)`，阻塞写走 `writeDirect()` |
-| `UdtClient.connect()` / `call()` | 同上，建连与写帧都在 IO |
-| `TvRepository.connect()` / `probeAndConnect()` / `installApk()` | 整个方法体包在 `withContext(Dispatchers.IO)` |
-| `TvViewModel.localIp` | 初始化时在 IO 上算完，用 StateFlow 回填 |
-| `IpProbe` | `openPorts()` 内部已是 IO；`isOpen()` 标注为仅限 IO 线程调用 |
+并发要点（v1.5.1 踩坑）：
 
-这样无论调用方在哪个调度器上，都不会踩主线程网络限制。
+- `TvRepository.connect()` 用 **Mutex 串行化**——init 自动连接与 ON_RESUME 重入会并发建**双套通道**，加锁后谁先连上谁生效，自动场景 `force=false`（已连接直接返回）
+- 图标加载用 `Semaphore(4)` 限流 + 去重，磁盘缓存 `cacheDir/tvicons`
+- 断线自动重连带 `userDisconnected` 标志，用户主动断开不触发
 
 ## 六、连接端口
 
-RC 端口**不是固定 30612**。逆向 `h2.h.M()` 显示：连接端口优先取设备数据里的端口
-（即 mDNS `_rc._tcp` SRV 记录的值），**仅当该值为 0 才回落 30612**。
-实测有电视把 `_rc._tcp` 广播到 6091。
-
-因此实现为「候选列表按序尝试」：
+RC 端口**不是固定 30612**：优先取 mDNS `_rc._tcp` SRV 记录的端口，仅当为 0 才回落 30612（实测有电视广播 6091）。
 
 | 通道 | 候选顺序 |
 | --- | --- |
 | RC | 广播端口（若有）→ 30612 → 6091 |
 | UDT | 广播端口（若有）→ 6093（milink 的 TXT `tcp=` 优先于 SRV） |
 
-全部失败才报错，错误消息里会列出**实际尝试过的端口**，方便定位。
+全部失败才报错，错误消息里列出**实际尝试过的端口**。
 
 ## 七、已知限制
 
-1. **加密固件**：电视版本 > `0x01000200` 的固件要求 AES 会话密钥，密钥由小米账号 AirKan 授权下发。本 App 未实现该链路，连接后首页会提示「按键可能无效」。
-2. **安装确认**：电视端一定会弹系统确认框，这是电视的安全机制，无法绕过。手机侧只负责把 APK 推过去。
-3. **触控注入**：部分固件不开放 type 6，遥控页已注明；此时方向键仍可用。
-4. **电视端拦截**：部分电视上的安全软件会拦截局域网 HTTP 拉取，安装页给出了 U 盘安装的替代建议。
-5. **未在真机验证**：本工程通过了编译与协议层单测，但尚未在真实电视上做端到端联调。
+1. **加密固件**：电视版本 > `0x01000200` 需要 AES 会话密钥（小米账号 AirKan 授权下发 RSA 私钥），本 App 未实现该链路，UI 显式提示「按键可能无效」。
+2. **安装确认**：电视端一定弹系统确认框，无法绕过。
+3. **触控注入**：部分固件不开放 type 6，此时方向键仍可用。
+4. **ColorOS/杀后台**：激进厂商可能杀掉前台服务，建议系统设置里允许自启动/后台运行；代码侧已有断线重连 + 回前台重连兜底。
 
 ## 八、排查
 
-**连接失败**时按顺序看：
-
-1. 错误文案里的「已尝试端口 …」——若 30612 / 6091 都连不上，说明是网络层问题而非协议问题：
-   - 电视是否开机、是否和手机在**同一 Wi-Fi**（不是访客网络）
-   - 路由器是否开了 **AP 隔离 / 设备隔离**（开了必然连不上）
-   - 电视是否允许「远程控制 / 无线显示」类开关
-2. 首页设备卡片显示**双通道状态**：RC 就绪但 UDT 未连通 → 遥控可用、应用管理不可用。
-3. `adb logcat -s TvRepository RcClient UdtClient ApkHttpServer` 可看到每个端口的尝试结果。
+1. **连接失败**：看错误文案里的「已尝试端口」；确认同一 Wi-Fi、路由器未开 AP 隔离。
+2. **双通道状态**：首页英雄卡徽章显示 RC/UDT/加密各自状态；RC 就绪但 UDT 未连通 → 遥控可用、应用管理不可用。
+3. **按键无效/电视卡死**：优先检查时间戳是否 uptimeMillis、scanCode 是否填了、长按是否走 repeat 模式（见 2.1 三条铁律）。
+4. 日志：`adb logcat -s TvRepository RcClient UdtClient ApkHttpServer ConnectionService`。
 
 ## 九、变更记录
 
-### 1.0.1
-- 修复：连接电视抛 `NetworkOnMainThreadException` —— RC/UDT 客户端与仓储层的 socket 操作原先在调用线程（`viewModelScope` = 主线程）执行，现已统一切到 `Dispatchers.IO`。
-- 修复：RC/UDT 端口改为候选列表按序回落，不再只认 30612；错误消息列出实际尝试的端口。
-- 改进：milink 的 UDT 端口优先读 mDNS TXT `tcp=`（原实现也这么做），SRV 端口降为兜底。
-- 改进：本机 IP 计算移出主线程；连接页显示每台设备的 RC/UDT 端口。
+### 1.6.0 (13)
+- **修复音量键无效 + 电视输入卡死**：时间戳改 uptimeMillis、填真实 scancode、长按改标准 repeat 模式（旧实现 90ms 全量 DOWN+UP 对洪泛电视输入队列）
 
-### 1.0.0
-- 首个可用版本：连接/发现、遥控、应用管理、Pin、APK 推送安装。
+### 1.5.2 (12)
+- connect() 加 Mutex + force 参数，修复启动时双套 RC/UDT 通道
+- 断线原因诊断日志（读循环 EOF/异常、心跳失败、重连 cause）
 
----
+### 1.5.0 (10)
+- 首页未连接主 CTA：有上次设备直接重连，否则才跳连接页；连接中进度态
+- RC 断线自动重连（退避 2s/5s/10s 最多 3 次）；回前台 ON_RESUME 自动重连
+- 请求 POST_NOTIFICATIONS 权限（Android 13+ 常驻通知需要）
+
+### 1.4.2 / 1.4.1 / 1.4.0
+- 长按菜单 → ModalBottomSheet 底部动作面板；英雄卡按钮行（安装 APK / 断开连接）
+- 安装入口改首页按钮；长按卸载；电源键 Canvas 自绘图标
+- Git 初始化；连接成功自动刷新应用列表；设置页（主题切换 + 自动连接）；首页渐变英雄卡
+
+### 1.3.x
+- 前台保活服务、自动连接、音量 UP 帧 eventTime 偏移、图标懒加载+缓存、按压反馈
+- 修复扫描页 LazyColumn 重复 key 崩溃、快捷图标重启失效
+- **UDT 加密通道打通**：会话握手帧 + UDTPacket 16 字节分帧
+
+### 1.1.0
+- AirKan 授权（AirkanAuthClient/AirkanCrypto）+ RC 加密会话
+
+### 1.0.x
+- 首版：连接/发现、遥控、应用管理、Pin、APK 推送安装
+- 修复 NetworkOnMainThreadException（socket 统一切 IO）；端口候选列表回落
 
 ## 十、单测
 
-`ProtocolTest` 覆盖 19 项，全部为字节级黄金校验，包括：
+`app/src/test` 共 **34 项** JVM 测试，全部为字节级黄金校验：
 
-- RC 帧头大端长度、心跳/就绪帧、payload 超 1500 拒绝
-- 版本包请求布局与含/不含 `secretKey` 的响应解析
-- `SendKey` 帧**逐字节**比对（`0400410100000001003A`）、TLV 顺序（deviceId/source 在 characters 之前）、msgId 自增
-- 触摸帧指针几何量与 source
-- UDT 三段长度前缀自洽、ctrl 用 `action` 而非 `type`、tail 回填 requestId、分页解析
-- `getInstalledPackages` 解析容错（缺 label 回退包名、垃圾输入返回空）
-- RC/UDT 端口候选顺序与去重
+- `ProtocolTest`（27）：RC 帧头/心跳/就绪、版本协商、SendKey 逐字节比对与 TLV 顺序、scanCode 映射、长按 repeat 帧序列、触摸帧、UDT 三段长度/ctrl `action` 键/tail 回填/分页解析、端口候选顺序
+- `UdtPacketTest`（5）：会话握手帧、UDTPacket 16 字节头、分片 more 标志、控制帧识别
+- `AirkanCryptoTest`（8）：AES 会话加密往返
