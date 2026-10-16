@@ -19,6 +19,7 @@ import com.tvhelper.app.net.UdtEncryption
 import com.tvhelper.app.net.UdtException
 import com.tvhelper.app.net.UdtPush
 import com.tvhelper.app.net.RequestAuthResult
+import com.tvhelper.app.protocol.rc.RcKeyCodec
 import com.tvhelper.app.protocol.rc.RcTouchCodec
 import com.tvhelper.app.protocol.rc.RcVersionCodec
 import com.tvhelper.app.protocol.udt.RemoteApp
@@ -622,6 +623,31 @@ class TvRepository(
             true
         } catch (t: Throwable) {
             notice("按键发送失败：${t.message}", true)
+            false
+        }
+    }
+
+    /** 长按连发：标准 repeat 模式 —— DOWN 帧 repeatCount 递增，松手发一次 UP */
+    suspend fun sendKeyDown(keyCode: Int, downTime: Long, repeatCount: Int, eventTime: Long): Boolean {
+        val client = rc ?: return false
+        return try {
+            client.sendKeyRawFrames(
+                listOf(RcKeyCodec.frameDown(keyCode, downTime, eventTime = eventTime, repeatCount = repeatCount))
+            )
+            true
+        } catch (t: Throwable) {
+            Log.w(TAG, "按键 DOWN 发送失败：${t.message}")
+            false
+        }
+    }
+
+    suspend fun sendKeyUp(keyCode: Int, downTime: Long): Boolean {
+        val client = rc ?: return false
+        return try {
+            client.sendKeyRawFrames(listOf(RcKeyCodec.frameUp(keyCode, downTime)))
+            true
+        } catch (t: Throwable) {
+            Log.w(TAG, "按键 UP 发送失败：${t.message}")
             false
         }
     }

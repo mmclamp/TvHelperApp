@@ -188,6 +188,33 @@ class ProtocolTest {
         assertNotEquals(0, Bytes.readI32(frames[0], 4))
     }
 
+    @Test
+    fun keyFramesCarryRealScanCodes() {
+        // 音量键必须带真实 scancode（电视端部分处理依赖它），不能是 0
+        assertEquals(115, RcKeyCodec.scanCodeFor(TvKey.VOLUME_UP))
+        assertEquals(114, RcKeyCodec.scanCodeFor(TvKey.VOLUME_DOWN))
+        assertEquals(158, RcKeyCodec.scanCodeFor(TvKey.BACK))
+        RcKeyCodec.resetMsgIdForTest(0)
+        val f = RcKeyCodec.frameDown(TvKey.VOLUME_UP, 100L)
+        val down = parseTlv(f.copyOfRange(10, f.size))
+        assertEquals(115, down.i(4))
+    }
+
+    @Test
+    fun repeatDownCarriesRepeatCount() {
+        RcKeyCodec.resetMsgIdForTest(0)
+        val f1 = RcKeyCodec.frameDown(TvKey.VOLUME_UP, 100L, eventTime = 100L, repeatCount = 0)
+        val f3 = RcKeyCodec.frameDown(TvKey.VOLUME_UP, 100L, eventTime = 460L, repeatCount = 2)
+        val first = parseTlv(f1.copyOfRange(10, f1.size))
+        val third = parseTlv(f3.copyOfRange(10, f3.size))
+        assertEquals(0, first.i(5))
+        assertEquals(2, third.i(5))
+        // repeat 帧保持同一次按键的 downTime，eventTime 随当前时刻推进
+        assertEquals(100L, first.l(7))
+        assertEquals(100L, third.l(7))
+        assertEquals(460L, third.l(8))
+    }
+
     // ============================================================ RC 触摸
 
     @Test

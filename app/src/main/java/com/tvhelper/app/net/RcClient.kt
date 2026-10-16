@@ -199,7 +199,9 @@ class RcClient(
 
     suspend fun sendKey(keyCode: Int) {
         Log.i(TAG, "→ key keyCode=$keyCode")
-        for (frame in RcKeyCodec.framesDownUp(keyCode)) writeRaw(frame)
+        // 时间戳必须用 uptimeMillis（Android 输入系统惯例），wall clock 会导致电视端时间判断异常
+        val now = android.os.SystemClock.uptimeMillis()
+        for (frame in RcKeyCodec.framesDownUp(keyCode, now)) writeRaw(frame)
     }
 
     suspend fun sendKeyRawFrames(frames: List<ByteArray>) {

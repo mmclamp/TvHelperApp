@@ -118,6 +118,29 @@ object RcKeyCodec {
         return out
     }
 
+    /** Linux input.h 标准 scancode（物理遥控器同源）；电视端部分处理（如音量）依赖它 */
+    fun scanCodeFor(keyCode: Int): Int = when (keyCode) {
+        TvKey.DPAD_UP -> 103
+        TvKey.DPAD_DOWN -> 108
+        TvKey.DPAD_LEFT -> 105
+        TvKey.DPAD_RIGHT -> 106
+        TvKey.DPAD_CENTER -> 352   // KEY_OK
+        TvKey.VOLUME_UP -> 115
+        TvKey.VOLUME_DOWN -> 114
+        TvKey.POWER -> 116
+        TvKey.BACK -> 158
+        TvKey.HOME -> 102
+        TvKey.MENU -> 139
+        TvKey.MUTE -> 113
+        TvKey.MEDIA_PLAY_PAUSE, 85 -> 164
+        TvKey.MEDIA_NEXT -> 163
+        TvKey.MEDIA_PREVIOUS -> 165
+        TvKey.MEDIA_REWIND -> 168
+        TvKey.MEDIA_FAST_FORWARD -> 208
+        TvKey.ENTER -> 352
+        else -> 0
+    }
+
     /** 完整 RC 帧（type 4） */
     fun frame(e: KeyEvent): ByteArray {
         val data = buildKeyData(e)
@@ -130,16 +153,43 @@ object RcKeyCodec {
     }
 
     /**
-     * 一次点击 = DOWN + UP 两帧。
-     * 注意 UP 帧的 eventTime 必须晚于 downTime（电视端重建 KeyEvent 后
-     * eventTime == downTime 的 UP 可能被输入系统丢弃，音量键因此无效）。
+     * 按下帧（长按 repeat 也用它：repeatCount 递增、eventTime 用当前时刻）。
+     * 时间戳必须用 SystemClock.uptimeMillis()（Android 输入系统惯例），
+     * 绝不能用 currentTimeMillis()——wall clock 会让电视端输入队列时间判断异常。
      */
-    fun framesDownUp(
+    fun frameDown(
         keyCode: Int,
-        downTime: Long = System.currentTimeMillis(),
-    ): List<ByteArray> = listOf(
-        frame(KeyEvent(keyCode, ACTION_DOWN, downTime, downTime)),
-        frame(KeyEvent(keyCode, ACTION_UP, downTime, downTime + 120)),
+        downTime: Long,
+        eventTime: Long = downTime,
+        repeatCount: Int = 0,
+    ): ByteArray = frame(
+        KeyEvent(
+            keyCode,
+            ACTION_DOWN,
+            downTime = downTime,
+            eventTime = eventTime,
+            repeatCount = repeatCount,
+            scanCode = scanCodeFor(keyCode),
+        )
+    )
+
+    /** 抬起帧：eventTime 必须晚于 downTime（否则电视端输入系统可能丢弃） */
+    fun frameUp(keyCode: Int, downTime: Long, eventTime: Long = downTime + 120): ByteArray = frame(
+        KeyEvent(
+            keyCode,
+            ACTION_UP,
+            downTime = downTime,
+            eventTime = eventTime,
+            scanCode = scanCodeFor(keyCode),
+        )
+    )
+
+    /**
+     * 一次点击 = DOWN + UP 两帧（downTime 由调用方传，必须是 uptimeMillis）。
+     */
+    fun framesDownUp(keyCode: Int, downTime: Long): List<ByteArray> = listOf(
+        frameDown(keyCode, downTime, eventTime = downTime),
+        frameUp(keyCode, downTime, eventTime = downTime + 120),
     )
 }
 

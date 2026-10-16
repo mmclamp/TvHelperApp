@@ -32,6 +32,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -199,14 +200,31 @@ class TvViewModel(
 
     private var repeatJob: Job? = null
 
-    /** 长按连发：立即发一次，之后每 90ms 一次 */
+    /** 长按中（等待松手发 UP）的按键码；null = 无长按 */
+    private var repeatKeyCode: Int? = null
+
+    /**
+     * 长按连发：对齐物理遥控器的标准 repeat 模式——
+     * 按下发一次 DOWN(repeat=0)，之后每 180ms 发一次 DOWN（repeatCount 递增），
+     * 松手时补一次 UP。相比旧实现（每 90ms 发完整 DOWN+UP 对）不再洪泛
+     * 电视端输入队列（洪泛会导致电视输入系统卡死，物理遥控器也失灵）。
+     * 任一帧发送失败立即停止，避免失败后继续轰炸。
+     */
     fun startKeyRepeat(keyCode: Int) {
         stopKeyRepeat()
+        repeatKeyCode = keyCode
         repeatJob = viewModelScope.launch {
-            repo.sendKey(keyCode)
-            while (true) {
-                delay(90)
-                repo.sendKey(keyCode)
+            val downTime = android.os.SystemClock.uptimeMillis()
+            if (!repo.sendKeyDown(keyCode, downTime, repeatCount = 0, eventTime = downTime)) {
+                repeatKeyCode = null
+                return@launch
+            }
+            var repeat = 1
+            while (isActive) {
+                delay(180)
+                val now = android.os.SystemClock.uptimeMillis()
+                if (!repo.sendKeyDown(keyCode, downTime, repeatCount = repeat, eventTime = now)) break
+                repeat++
             }
         }
     }
@@ -214,6 +232,12 @@ class TvViewModel(
     fun stopKeyRepeat() {
         repeatJob?.cancel()
         repeatJob = null
+        repeatKeyCode?.let { code ->
+            repeatKeyCode = null
+            viewModelScope.launch {
+                repo.sendKeyUp(code, downTime = android.os.SystemClock.uptimeMillis())
+            }
+        }
     }
 
     fun sendTouch(action: Int, x: Float, y: Float, downTime: Long, eventTime: Long) {
