@@ -25,6 +25,7 @@ import com.tvhelper.app.protocol.udt.RemoteApp
 import com.tvhelper.app.service.ConnectionService
 import com.tvhelper.app.data.PairingPhase
 import com.tvhelper.app.data.PairingState
+import com.tvhelper.app.data.SettingsStore
 import com.tvhelper.app.data.TvPairing
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -100,6 +101,12 @@ class TvRepository(
     val knownDevices: Flow<List<TvDevice>> = settings.knownDevices
     val lastDevice: Flow<TvDevice?> = settings.lastDevice
     val autoConnect: Flow<Boolean> = settings.autoConnect
+
+    val themeMode: Flow<SettingsStore.ThemeMode> = settings.themeMode
+
+    fun setThemeMode(mode: SettingsStore.ThemeMode) {
+        scope.launch { settings.setThemeMode(mode) }
+    }
 
     /** 自动连接：勾选了开关且记住了上次设备时返回该设备 */
     suspend fun autoConnectTarget(): TvDevice? {
@@ -271,6 +278,11 @@ class TvRepository(
         settings.setLastDevice(device)
         notice("已连接 ${device.displayName}")
         ConnectionService.start(appContext)
+
+        // ---- 连接成功自动刷新应用列表（静默，失败不打扰用户）
+        if (udtClient != null) {
+            runCatching { refreshInstalledApps(quiet = true) }
+        }
 
         // ---- 3) 固件要求加密但还没配对：自动发起授权配对（电视会弹 6 位授权码）
         if (!encrypted && version.needsCrypto && existingPairing == null) {
@@ -568,20 +580,20 @@ class TvRepository(
 
     // ------------------------------------------------------------ 应用管理
 
-    suspend fun refreshInstalledApps(): Boolean {
+    suspend fun refreshInstalledApps(quiet: Boolean = false): Boolean {
         val a = api
         if (a == null) {
-            notice("应用管理需要 UDT 通道，当前不可用", true)
+            if (!quiet) notice("应用管理需要 UDT 通道，当前不可用", true)
             return false
         }
         _appsLoading.value = true
         return try {
             val list = a.getInstalledPackages()
             _installedApps.value = list
-            notice("已读取 ${list.size} 个应用")
+            if (!quiet) notice("已读取 ${list.size} 个应用")
             true
         } catch (t: Throwable) {
-            notice("读取应用列表失败：${t.message}", true)
+            if (!quiet) notice("读取应用列表失败：${t.message}", true)
             false
         } finally {
             _appsLoading.value = false

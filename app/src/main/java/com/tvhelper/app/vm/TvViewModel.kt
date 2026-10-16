@@ -12,6 +12,7 @@ import com.tvhelper.app.data.InstallState
 import com.tvhelper.app.data.Notice
 import com.tvhelper.app.data.PairingState
 import com.tvhelper.app.data.PinnedApp
+import com.tvhelper.app.data.SettingsStore
 import com.tvhelper.app.data.TvDevice
 import com.tvhelper.app.data.TvRepository
 import com.tvhelper.app.data.toPinned
@@ -50,6 +51,9 @@ class TvViewModel(
 
     val autoConnect: StateFlow<Boolean> =
         repo.autoConnect.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+
+    val themeMode: StateFlow<SettingsStore.ThemeMode> =
+        repo.themeMode.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsStore.ThemeMode.SYSTEM)
 
     val knownDevices: StateFlow<List<TvDevice>> =
         repo.knownDevices.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -145,6 +149,10 @@ class TvViewModel(
 
     fun setAutoConnect(enabled: Boolean) {
         repo.setAutoConnect(enabled)
+    }
+
+    fun setThemeMode(mode: SettingsStore.ThemeMode) {
+        viewModelScope.launch { repo.setThemeMode(mode) }
     }
 
     // ---------------- 应用图标

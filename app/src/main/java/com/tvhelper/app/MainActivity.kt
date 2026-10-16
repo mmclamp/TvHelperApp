@@ -15,6 +15,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
@@ -34,11 +35,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.tvhelper.app.data.SettingsStore
 import com.tvhelper.app.ui.connect.ConnectScreen
 import com.tvhelper.app.ui.home.HomeScreen
 import com.tvhelper.app.ui.install.InstallScreen
 import com.tvhelper.app.ui.remote.RemoteScreen
+import com.tvhelper.app.ui.settings.SettingsScreen
 import com.tvhelper.app.ui.theme.TvHelperTheme
 import com.tvhelper.app.vm.TvViewModel
 
@@ -48,9 +52,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            TvHelperTheme {
-                AppRoot()
-            }
+            AppRoot()
         }
     }
 }
@@ -60,6 +62,7 @@ private enum class Tab(val label: String, val icon: ImageVector) {
     REMOTE("遥控", Icons.Default.PlayArrow),
     INSTALL("安装", Icons.Default.Add),
     CONNECT("连接", Icons.Default.Search),
+    SETTINGS("设置", Icons.Default.Settings),
 }
 
 @Composable
@@ -70,6 +73,24 @@ private fun AppRoot() {
     val vm: TvViewModel = viewModel(
         factory = TvViewModel.factory(app.container.repository, context)
     )
+
+    // 深浅色：设置项 > 跟随系统
+    val themeMode by vm.themeMode.collectAsState()
+    val darkTheme = when (themeMode) {
+        SettingsStore.ThemeMode.SYSTEM -> isSystemInDarkTheme()
+        SettingsStore.ThemeMode.LIGHT -> false
+        SettingsStore.ThemeMode.DARK -> true
+    }
+
+    TvHelperTheme(darkTheme = darkTheme) {
+        AppContent(vm)
+    }
+    PairingDialog(vm)
+}
+
+@Composable
+private fun AppContent(vm: TvViewModel) {
+    val context = LocalContext.current
 
     var tab by rememberSaveable { mutableStateOf(Tab.HOME) }
 
@@ -109,11 +130,10 @@ private fun AppRoot() {
                 Tab.REMOTE -> RemoteScreen(vm = vm)
                 Tab.INSTALL -> InstallScreen(vm = vm)
                 Tab.CONNECT -> ConnectScreen(vm = vm)
+                Tab.SETTINGS -> SettingsScreen(vm = vm)
             }
         }
     }
-
-    PairingDialog(vm)
 }
 
 /**

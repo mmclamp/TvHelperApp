@@ -25,6 +25,25 @@ class SettingsStore(private val context: Context) {
         private val KEY_LAST_DEVICE = stringPreferencesKey("last_device")
         private val KEY_KNOWN_DEVICES = stringPreferencesKey("known_devices")
         private val KEY_AUTO_CONNECT = booleanPreferencesKey("auto_connect")
+        private val KEY_THEME_MODE = stringPreferencesKey("theme_mode")
+    }
+
+    /** 主题模式 */
+    enum class ThemeMode(val label: String) {
+        SYSTEM("跟随系统"),
+        LIGHT("浅色"),
+        DARK("深色"),
+    }
+
+    /** 主题模式（默认跟随系统） */
+    val themeMode: Flow<ThemeMode> = context.dataStore.data.map { prefs ->
+        runCatching {
+            ThemeMode.valueOf(prefs[KEY_THEME_MODE] ?: ThemeMode.SYSTEM.name)
+        }.getOrDefault(ThemeMode.SYSTEM)
+    }
+
+    suspend fun setThemeMode(mode: ThemeMode) {
+        context.dataStore.edit { it[KEY_THEME_MODE] = mode.name }
     }
 
     /** 自动连接上次连接过的电视（默认开） */

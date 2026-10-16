@@ -5,6 +5,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -28,7 +29,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -41,16 +41,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.tvhelper.app.data.ConnectionPhase
 import com.tvhelper.app.data.ConnectionState
 import com.tvhelper.app.data.PinnedApp
 import com.tvhelper.app.protocol.udt.RemoteApp
 import com.tvhelper.app.ui.common.EmptyHint
-import com.tvhelper.app.ui.common.LabeledValue
 import com.tvhelper.app.ui.common.PillButton
 import com.tvhelper.app.ui.common.SectionTitle
 import com.tvhelper.app.ui.common.StatusDot
@@ -87,7 +89,7 @@ fun HomeScreen(vm: TvViewModel, onGoConnect: () -> Unit) {
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 28.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        item { DeviceStatusCard(connection, autoConnect, onAutoConnectChange = { vm.setAutoConnect(it) }, onDisconnect = { vm.disconnect() }, onGoConnect = onGoConnect) }
+        item { DeviceStatusCard(connection, onDisconnect = { vm.disconnect() }, onGoConnect = onGoConnect) }
 
         item {
             SectionTitle("快捷打开", trailing = {
@@ -222,26 +224,53 @@ fun HomeScreen(vm: TvViewModel, onGoConnect: () -> Unit) {
 @Composable
 private fun DeviceStatusCard(
     connection: ConnectionState,
-    autoConnect: Boolean,
-    onAutoConnectChange: (Boolean) -> Unit,
     onDisconnect: () -> Unit,
     onGoConnect: () -> Unit,
 ) {
-    TvCard {
+    // 连接状态渐变英雄卡：连接中用品牌蓝渐变，未连接用柔和表面色
+    val connected = connection.isConnected
+    val shape = RoundedCornerShape(20.dp)
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(
+                if (connected) {
+                    Brush.linearGradient(
+                        listOf(
+                            MaterialTheme.colorScheme.primary,
+                            Color(0xFF35C6E8),
+                        )
+                    )
+                } else {
+                    Brush.linearGradient(
+                        listOf(
+                            MaterialTheme.colorScheme.surfaceVariant,
+                            MaterialTheme.colorScheme.surface,
+                        )
+                    )
+                }
+            )
+            .padding(18.dp),
+    ) {
         Column {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     Modifier
-                        .size(44.dp)
+                        .size(46.dp)
                         .clip(RoundedCornerShape(14.dp))
-                        .background(MaterialTheme.colorScheme.primaryContainer),
+                        .background(
+                            if (connected) Color.White.copy(alpha = 0.22f)
+                            else MaterialTheme.colorScheme.primaryContainer
+                        ),
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
                         "TV",
                         style = MaterialTheme.typography.labelLarge,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        color = if (connected) Color.White
+                                else MaterialTheme.colorScheme.onPrimaryContainer,
                     )
                 }
                 Spacer(Modifier.width(12.dp))
@@ -252,42 +281,77 @@ private fun DeviceStatusCard(
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
+                        color = if (connected) Color.White
+                                else MaterialTheme.colorScheme.onSurface,
                     )
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        StatusDot(connection.isConnected)
+                        StatusDot(connected)
                         Spacer(Modifier.width(6.dp))
                         Text(
-                            connection.device?.host ?: "请先连接电视",
+                            when {
+                                connected -> connection.device?.host ?: ""
+                                connection.phase == ConnectionPhase.CONNECTING -> "正在连接…"
+                                else -> "请先连接电视"
+                            },
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = if (connected) Color.White.copy(alpha = 0.85f)
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }
-                if (connection.isConnected) {
+                if (connected) {
                     PillButton("断开", onClick = onDisconnect)
                 } else {
                     PillButton("去连接", onClick = onGoConnect)
                 }
             }
 
-            Spacer(Modifier.height(10.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "自动连接上次电视",
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.weight(1f),
-                )
-                Switch(checked = autoConnect, onCheckedChange = onAutoConnectChange)
+            if (connected) {
+                Spacer(Modifier.height(14.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    HeroChip("遥控", connection.rcConnected)
+                    HeroChip("应用", connection.udtConnected)
+                    HeroChip("加密", connection.encrypted)
+                    connection.lastHeartbeatAt.takeIf { it > 0 }?.let {
+                        HeroChip("心跳", true, value = formatTime(it))
+                    }
+                }
+                connection.tvProtocolVersion?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "协议版本 0x${Integer.toHexString(it)}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White.copy(alpha = 0.75f),
+                    )
+                }
             }
-            LabeledValue("遥控通道", if (connection.rcConnected) "30612 已连通" else "未连通")
-            LabeledValue("应用通道", if (connection.udtConnected) "6093 已连通" else "未连通")
-            connection.tvProtocolVersion?.let {
-                LabeledValue("电视协议", "0x" + Integer.toHexString(it))
-            }
-            connection.lastHeartbeatAt.takeIf { it > 0 }?.let {
-                LabeledValue("最近心跳", formatTime(it))
-            }
-            LabeledValue("加密通道", if (connection.encrypted) "已启用（AES 会话密钥）" else "未启用")
+        }
+    }
+}
+
+/** 英雄卡上的状态小徽章 */
+@Composable
+private fun HeroChip(label: String, ok: Boolean, value: String? = null) {
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = Color.White.copy(alpha = 0.18f),
+    ) {
+        Row(
+            Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Box(
+                Modifier
+                    .size(6.dp)
+                    .clip(CircleShape)
+                    .background(if (ok) Color(0xFF9FF5C8) else Color.White.copy(alpha = 0.5f))
+            )
+            Text(
+                value ?: label,
+                style = MaterialTheme.typography.labelSmall,
+                color = Color.White,
+            )
         }
     }
 }
