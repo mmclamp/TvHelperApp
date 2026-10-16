@@ -70,6 +70,13 @@ class TvRepository(
     private var api: TvApi? = null
     private var eventJob: Job? = null
 
+    /** 用户主动断开时不做自动重连 */
+    @Volatile
+    private var userDisconnected = false
+    private var reconnectJob: Job? = null
+    private var reconnectAttempts = 0
+    private val reconnectBackoffMs = longArrayOf(2_000L, 5_000L, 10_000L)
+
     val apkServer = ApkHttpServer()
 
     private val _connection = MutableStateFlow(ConnectionState())
@@ -172,6 +179,10 @@ class TvRepository(
     }
 
     suspend fun connect(device: TvDevice): Boolean = withContext(Dispatchers.IO) {
+        userDisconnected = false
+        reconnectAttempts = 0
+        reconnectJob?.cancel()
+        reconnectJob = null
         disconnectInternal()
         val existingPairing = pairingStore.pairingFor(device.host)
         _pairing.value = PairingState(knownPaired = existingPairing != null)
@@ -201,12 +212,10 @@ class TvRepository(
                 when (ev) {
                     is RcEvent.ServerHeartbeat ->
                         _connection.value = _connection.value.copy(lastHeartbeatAt = System.currentTimeMillis())
-                    is RcEvent.Closed -> if (_connection.value.isConnected) {
-                        _connection.value = _connection.value.copy(
-                            phase = ConnectionPhase.FAILED,
-                            rcConnected = false,
-                            message = "与电视的连接已断开",
-                        )
+                    is RcEvent.Closed -> {
+                        if (userDisconnected) return@collect
+                        // RC socket 被系统/电视断开：自动重连（退避 2s/5s/10s，最多 3 次）
+                        scheduleReconnect(device)
                     }
                     else -> Unit
                 }
@@ -278,7 +287,6 @@ class TvRepository(
         settings.setLastDevice(device)
         notice("已连接 ${device.displayName}")
         ConnectionService.start(appContext)
-
         // ---- 连接成功自动刷新应用列表（静默，失败不打扰用户）
         if (udtClient != null) {
             runCatching { refreshInstalledApps(quiet = true) }
@@ -340,6 +348,34 @@ class TvRepository(
             "UDT 通道不可达（已尝试端口 ${candidates.joinToString(" / ")}）",
             last,
         )
+    }
+
+    /** RC 断线后的自动重连：指数退避，重连期间界面显示「自动重连中」 */
+    private fun scheduleReconnect(device: TvDevice) {
+        if (reconnectAttempts >= reconnectBackoffMs.size) {
+            _connection.value = _connection.value.copy(
+                phase = ConnectionPhase.FAILED,
+                rcConnected = false,
+                message = "与电视的连接已断开（自动重连未成功）",
+            )
+            ConnectionService.stop(appContext)
+            return
+        }
+        val attempt = ++reconnectAttempts
+        val backoff = reconnectBackoffMs[attempt - 1]
+        Log.i(TAG, "RC 断线，${backoff / 1000}s 后自动重连（第 $attempt 次）")
+        _connection.value = _connection.value.copy(
+            phase = ConnectionPhase.CONNECTING,
+            rcConnected = false,
+            message = "连接断开，正在自动重连（第 $attempt 次）…",
+        )
+        reconnectJob?.cancel()
+        reconnectJob = scope.launch {
+            delay(backoff)
+            if (userDisconnected) return@launch
+            runCatching { connect(device) }
+                .onFailure { Log.w(TAG, "自动重连失败：${it.message}") }
+        }
     }
 
     private fun handlePush(push: UdtPush) {
@@ -540,6 +576,9 @@ class TvRepository(
     }
 
     fun disconnect() {
+        userDisconnected = true
+        reconnectJob?.cancel()
+        reconnectJob = null
         disconnectInternal()
         _connection.value = ConnectionState()
         ConnectionService.stop(appContext)

@@ -7,6 +7,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import com.tvhelper.app.data.ConnectionPhase
 import com.tvhelper.app.data.ConnectionState
 import com.tvhelper.app.data.InstallState
 import com.tvhelper.app.data.Notice
@@ -57,6 +58,9 @@ class TvViewModel(
 
     val knownDevices: StateFlow<List<TvDevice>> =
         repo.knownDevices.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val lastDevice: StateFlow<TvDevice?> =
+        repo.lastDevice.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     // ---------------- 扫描
 
@@ -149,6 +153,19 @@ class TvViewModel(
 
     fun setAutoConnect(enabled: Boolean) {
         repo.setAutoConnect(enabled)
+    }
+
+    /**
+     * 回前台/热启动时的自动连接：未连接且记住了设备时直接重连，
+     * 不跳转连接页。连接中或已连接时为空操作。
+     */
+    fun tryAutoConnect() {
+        viewModelScope.launch {
+            val state = repo.connection.value
+            if (state.isConnected || state.phase == ConnectionPhase.CONNECTING) return@launch
+            val target = repo.autoConnectTarget() ?: return@launch
+            repo.connect(target)
+        }
     }
 
     fun setThemeMode(mode: SettingsStore.ThemeMode) {

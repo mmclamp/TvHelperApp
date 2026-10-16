@@ -62,6 +62,7 @@ import androidx.compose.ui.unit.dp
 import com.tvhelper.app.data.ConnectionPhase
 import com.tvhelper.app.data.ConnectionState
 import com.tvhelper.app.data.PinnedApp
+import com.tvhelper.app.data.TvDevice
 import com.tvhelper.app.data.toPinned
 import com.tvhelper.app.protocol.udt.RemoteApp
 import com.tvhelper.app.ui.common.EmptyHint
@@ -80,6 +81,7 @@ fun HomeScreen(vm: TvViewModel, onGoConnect: () -> Unit, onGoInstall: () -> Unit
     val pinned by vm.pinnedApps.collectAsState()
     val icons by vm.appIcons.collectAsState()
     val autoConnect by vm.autoConnect.collectAsState()
+    val lastDevice by vm.lastDevice.collectAsState()
 
     var query by remember { mutableStateOf("") }
     var actionTarget by remember { mutableStateOf<PinnedApp?>(null) }
@@ -104,6 +106,8 @@ fun HomeScreen(vm: TvViewModel, onGoConnect: () -> Unit, onGoInstall: () -> Unit
     ) {
         item { DeviceStatusCard(
             connection = connection,
+            lastDevice = lastDevice,
+            onConnectLast = { lastDevice?.let { vm.connect(it) } },
             onDisconnect = { vm.disconnect() },
             onGoConnect = onGoConnect,
             onGoInstall = onGoInstall,
@@ -331,12 +335,15 @@ private fun ActionSheet(
 @Composable
 private fun DeviceStatusCard(
     connection: ConnectionState,
+    lastDevice: TvDevice?,
+    onConnectLast: () -> Unit,
     onDisconnect: () -> Unit,
     onGoConnect: () -> Unit,
     onGoInstall: () -> Unit,
 ) {
     // 连接状态渐变英雄卡：连接中用品牌蓝渐变，未连接用柔和表面色
     val connected = connection.isConnected
+    val connecting = connection.phase == ConnectionPhase.CONNECTING
     val shape = RoundedCornerShape(20.dp)
     Box(
         modifier = Modifier
@@ -393,22 +400,21 @@ private fun DeviceStatusCard(
                                 else MaterialTheme.colorScheme.onSurface,
                     )
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        StatusDot(connected)
+                        StatusDot(connected || connecting)
                         Spacer(Modifier.width(6.dp))
                         Text(
                             when {
                                 connected -> connection.device?.host ?: ""
-                                connection.phase == ConnectionPhase.CONNECTING -> "正在连接…"
+                                connecting -> connection.message ?: "正在连接…"
                                 else -> "请先连接电视"
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = if (connected) Color.White.copy(alpha = 0.85f)
                                     else MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                     }
-                }
-                if (!connected) {
-                    PillButton("去连接", onClick = onGoConnect)
                 }
             }
 
@@ -446,6 +452,27 @@ private fun DeviceStatusCard(
                         onClick = onDisconnect,
                     )
                 }
+            } else {
+                // 未连接：主 CTA —— 有记录直接重连，否则去连接页
+                Spacer(Modifier.height(14.dp))
+                PrimaryCta(
+                    label = when {
+                        connecting -> "正在连接…"
+                        lastDevice != null -> "连接 ${lastDevice.displayName}"
+                        else -> "连接电视"
+                    },
+                    hint = when {
+                        connecting -> connection.message
+                        lastDevice != null -> "点按直接重连上次设备 · 去连接其他电视"
+                        else -> "扫描或手动输入 IP"
+                    },
+                    connecting = connecting,
+                    onClick = {
+                        if (!connecting) {
+                            if (lastDevice != null) onConnectLast() else onGoConnect()
+                        }
+                    },
+                )
             }
         }
     }
@@ -485,6 +512,70 @@ private fun HeroActionButton(
                 fontWeight = FontWeight.SemiBold,
                 color = Color.White,
             )
+        }
+    }
+}
+
+/** 未连接状态的主 CTA：主色填充大按钮，连接中变为进度态 */
+@Composable
+private fun PrimaryCta(
+    label: String,
+    hint: String? = null,
+    connecting: Boolean = false,
+    onClick: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(enabled = !connecting, onClick = onClick),
+        shape = RoundedCornerShape(14.dp),
+        color = if (connecting) {
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+        } else {
+            MaterialTheme.colorScheme.primary
+        },
+    ) {
+        Row(
+            Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (connecting) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.width(10.dp))
+            }
+            Column(Modifier.weight(1f)) {
+                Text(
+                    label,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (connecting) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                hint?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (connecting) MaterialTheme.colorScheme.primary.copy(alpha = 0.7f)
+                                else MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.8f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            if (!connecting) {
+                Text(
+                    "→",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onPrimary,
+                )
+            }
         }
     }
 }
