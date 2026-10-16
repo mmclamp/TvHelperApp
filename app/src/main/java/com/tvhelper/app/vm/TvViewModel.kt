@@ -47,6 +47,7 @@ class TvViewModel(
     val installState: StateFlow<InstallState> = repo.install
     val pairingState: StateFlow<PairingState> = repo.pairing
     val appIcons: StateFlow<Map<String, ByteArray>> = repo.appIcons
+    val tvVolume: StateFlow<Int?> = repo.tvVolume
 
     val pinnedApps: StateFlow<List<PinnedApp>> =
         repo.pinnedApps.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -246,6 +247,30 @@ class TvViewModel(
         repeatJob?.cancel()
         repeatJob = null
         releaseRepeatedKey()
+    }
+
+    private var volumeJob: Job? = null
+
+    /**
+     * 音量连发：**不走按键帧**（原版逆向确认：按键方式的音量会被电视忽略甚至楔死输入系统），
+     * 改用播放控制通道的 setVolume（subType 14）直接设绝对值：按下一次 ±1，
+     * 长按每 180ms ±1；发送失败立即停。本地乐观回填，电视查询响应到达后自动修正。
+     */
+    fun startVolumeRepeat(up: Boolean) {
+        stopVolumeRepeat()
+        volumeJob = viewModelScope.launch {
+            var v = repo.tvVolume.value ?: 25
+            while (isActive) {
+                v = if (up) minOf(v + 1, 100) else maxOf(v - 1, 0)
+                if (!repo.setVolume(v)) break
+                delay(180)
+            }
+        }
+    }
+
+    fun stopVolumeRepeat() {
+        volumeJob?.cancel()
+        volumeJob = null
     }
 
     /** 补发 UP 帧释放长按；失败（连接断开等）自动重试，重连成功后再兜底一次 */

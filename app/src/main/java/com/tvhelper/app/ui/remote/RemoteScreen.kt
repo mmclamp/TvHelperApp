@@ -62,6 +62,7 @@ private const val VIRTUAL_H = 1080f
 @Composable
 fun RemoteScreen(vm: TvViewModel) {
     val connection by vm.connection.collectAsState()
+    val tvVolume by vm.tvVolume.collectAsState()
     val connected = connection.isConnected
     var trackpadMode by remember { mutableStateOf(false) }
 
@@ -156,18 +157,18 @@ fun RemoteScreen(vm: TvViewModel) {
                             horizontalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
                             VolumeButton(
-                                label = "音量 −",
+                                label = if (tvVolume != null) "音量 − ($tvVolume)" else "音量 −",
                                 enabled = connected,
                                 modifier = Modifier.weight(1f),
-                                onPress = { vm.startKeyRepeat(TvKey.VOLUME_DOWN) },
-                                onRelease = { vm.stopKeyRepeat() },
+                                onPress = { vm.startVolumeRepeat(up = false) },
+                                onRelease = { vm.stopVolumeRepeat() },
                             )
                             VolumeButton(
-                                label = "音量 ＋",
+                                label = if (tvVolume != null) "音量 ＋ ($tvVolume)" else "音量 ＋",
                                 enabled = connected,
                                 modifier = Modifier.weight(1f),
-                                onPress = { vm.startKeyRepeat(TvKey.VOLUME_UP) },
-                                onRelease = { vm.stopKeyRepeat() },
+                                onPress = { vm.startVolumeRepeat(up = true) },
+                                onRelease = { vm.stopVolumeRepeat() },
                             )
                         }
                     }

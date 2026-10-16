@@ -3,6 +3,7 @@ package com.tvhelper.app.protocol
 import com.tvhelper.app.net.IpProbe
 import com.tvhelper.app.protocol.rc.RcCodec
 import com.tvhelper.app.protocol.rc.RcKeyCodec
+import com.tvhelper.app.protocol.rc.RcPlayControlCodec
 import com.tvhelper.app.protocol.rc.RcTouchCodec
 import com.tvhelper.app.protocol.rc.RcVersionCodec
 import com.tvhelper.app.protocol.rc.TvKey
@@ -465,5 +466,42 @@ class ProtocolTest {
             }
         }
         return Tlv(map)
+    }
+
+    /** 播放控制帧：[03][len 2B][subType][id 4B][dataLen 2B][data]，对齐原版 PlayControlPacket */
+    @Test
+    fun playControlSetVolumeFrameLayout() {
+        val f = RcPlayControlCodec.frameSetVolume(35)
+        assertEquals(RcCodec.TYPE_PLAY, Bytes.u8(f, 0))
+        val payloadLen = Bytes.readI16(f, 1)
+        assertEquals(f.size - 3, payloadLen)
+        // subType 14 = setVolume（原版 l.o → APPEND=14）
+        assertEquals(14, Bytes.u8(f, 3))
+        // id u32BE 非零
+        assertNotEquals(0, Bytes.readI32(f, 4))
+        // dataLen = 1，data = 单字节音量值
+        assertEquals(1, Bytes.readI16(f, 8))
+        assertEquals(35, Bytes.u8(f, 10))
+        // 钳位：超范围收敛到 0-100
+        assertEquals(100, Bytes.u8(RcPlayControlCodec.frameSetVolume(200), 10))
+        assertEquals(0, Bytes.u8(RcPlayControlCodec.frameSetVolume(-5), 10))
+    }
+
+    @Test
+    fun playControlQueryVolumeFrameLayout() {
+        val f = RcPlayControlCodec.frameQueryVolume()
+        assertEquals(RcCodec.TYPE_PLAY, Bytes.u8(f, 0))
+        assertEquals(7, Bytes.u8(f, 3))                       // subType 7 = query
+        assertEquals(1, Bytes.readI16(f, 8))                  // dataLen
+        assertEquals(12, Bytes.u8(f, 10))                     // 音量项码 12（原版 GETK=12）
+    }
+
+    @Test
+    fun playControlExtractVolume() {
+        // 响应数据 = [项码, 值] 序列（原版 v1/i.l 构造）
+        assertEquals(35, RcPlayControlCodec.extractVolume(byteArrayOf(7, 1, 12, 35)))
+        assertEquals(0, RcPlayControlCodec.extractVolume(byteArrayOf(12, 0)))
+        assertNull(RcPlayControlCodec.extractVolume(byteArrayOf(7, 1, 2, 3)))
+        assertNull(RcPlayControlCodec.extractVolume(byteArrayOf(12)))
     }
 }

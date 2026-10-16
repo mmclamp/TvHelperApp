@@ -225,6 +225,12 @@ class RcClient(
         for (f in frames) writeRaw(f)
     }
 
+    /** 播放控制帧（type 3，含音量设置/查询）；会话加密时自动加密 */
+    suspend fun sendPlayControl(frame: ByteArray) {
+        Log.i(TAG, "→ playCtrl subType=${frame.getOrNull(3)?.toInt()?.and(0xFF)} len=${frame.size}")
+        writeRaw(frame)
+    }
+
     suspend fun sendTouch(event: RcTouchCodec.TouchEvent) {
         writeRaw(RcTouchCodec.frame(event))
     }

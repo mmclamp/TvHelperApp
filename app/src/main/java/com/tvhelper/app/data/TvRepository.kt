@@ -19,7 +19,9 @@ import com.tvhelper.app.net.UdtEncryption
 import com.tvhelper.app.net.UdtException
 import com.tvhelper.app.net.UdtPush
 import com.tvhelper.app.net.RequestAuthResult
+import com.tvhelper.app.protocol.rc.RcCodec
 import com.tvhelper.app.protocol.rc.RcKeyCodec
+import com.tvhelper.app.protocol.rc.RcPlayControlCodec
 import com.tvhelper.app.protocol.rc.RcTouchCodec
 import com.tvhelper.app.protocol.rc.RcVersionCodec
 import com.tvhelper.app.protocol.udt.RemoteApp
@@ -93,6 +95,10 @@ class TvRepository(
 
     private val _install = MutableStateFlow<InstallState>(InstallState.Idle)
     val install: StateFlow<InstallState> = _install
+
+    /** 当前电视音量（播放控制通道查询/设置，非按键）；null = 未知 */
+    private val _tvVolume = MutableStateFlow<Int?>(null)
+    val tvVolume: StateFlow<Int?> = _tvVolume
 
     private val _notices = MutableSharedFlow<Notice>(extraBufferCapacity = 32)
     val notices: SharedFlow<Notice> = _notices
@@ -238,6 +244,12 @@ class TvRepository(
                         // RC socket 被系统/电视断开：自动重连（退避 2s/5s/10s…永不放弃）
                         scheduleReconnect(device, ev.cause)
                     }
+                    is RcEvent.Other -> {
+                        // 播放控制响应（type 3）：目前只关心音量查询结果
+                        if (ev.type == RcCodec.TYPE_PLAY) {
+                            RcPlayControlCodec.extractVolume(ev.payload)?.let { _tvVolume.value = it }
+                        }
+                    }
                     else -> Unit
                 }
             }
@@ -308,6 +320,10 @@ class TvRepository(
         settings.setLastDevice(device)
         notice("已连接 ${device.displayName}")
         ConnectionService.start(appContext)
+        // ---- 查询电视当前音量（原版协议：播放控制 subType 7，音量项码 12）
+        _tvVolume.value = null
+        runCatching { rcClient.sendPlayControl(RcPlayControlCodec.frameQueryVolume()) }
+            .onFailure { Log.w(TAG, "音量查询发送失败：${it.message}") }
         // ---- 连接成功自动刷新应用列表（静默，失败不打扰用户）
         if (udtClient != null) {
             runCatching { refreshInstalledApps(quiet = true) }
@@ -652,6 +668,33 @@ class TvRepository(
         } catch (t: Throwable) {
             Log.w(TAG, "按键 UP 发送失败：${t.message}")
             false
+        }
+    }
+
+    /**
+     * 设置电视音量（绝对值 0-100）。对齐原版：RC type 3 subType 14 + 单字节数值，
+     * 电视端自行钳位。乐观回填本地状态，查询响应到达时会被修正。
+     * 返回 false 表示发送失败（连接断开等），调用方应停止连发。
+     */
+    suspend fun setVolume(volume: Int): Boolean {
+        val client = rc ?: return false
+        val v = volume.coerceIn(0, 100)
+        return try {
+            client.sendPlayControl(RcPlayControlCodec.frameSetVolume(v))
+            _tvVolume.value = v
+            true
+        } catch (t: Throwable) {
+            Log.w(TAG, "音量设置失败：${t.message}")
+            false
+        }
+    }
+
+    /** 查询电视当前音量 */
+    fun queryVolume() {
+        val client = rc ?: return
+        scope.launch {
+            runCatching { client.sendPlayControl(RcPlayControlCodec.frameQueryVolume()) }
+                .onFailure { Log.w(TAG, "音量查询失败：${it.message}") }
         }
     }
 
