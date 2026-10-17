@@ -25,9 +25,11 @@ import com.tvhelper.app.protocol.rc.RcKeyCodec
 import com.tvhelper.app.protocol.rc.RcTouchCodec
 import com.tvhelper.app.protocol.rc.TvKey
 import com.tvhelper.app.protocol.udt.RemoteApp
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -231,6 +233,14 @@ class TvViewModel(
     private var repeatDownTime: Long = 0L
 
     /**
+     * 首键 DOWN 是否已落地（含成功/失败结论）的信号。
+     * v1.8.9 踩坑：短按 = start 后立即 stop（间隔可 <1ms），若 DOWN 帧依赖可取消协程，
+     * 会被 stopKeyRepeat 的 cancel 杀死在发出之前（日志表现为「StandaloneCoroutine was cancelled」），
+     * 方向键单击完全失效。因此 DOWN 用独立不可取消协程发送，stop 侧等信号再补 UP。
+     */
+    private var downSentSignal: CompletableDeferred<Boolean>? = null
+
+    /**
      * 长按连发：对齐物理遥控器的标准 repeat 模式——
      * 按下发一次 DOWN(repeat=0)，之后每 180ms 发一次 DOWN（repeatCount 递增），
      * 松手时补一次 UP。UP 帧必须复用按下的 downTime（电视端按 downTime 配对 DOWN/UP，
@@ -240,18 +250,24 @@ class TvViewModel(
     fun startKeyRepeat(keyCode: Int) {
         stopKeyRepeat()
         repeatKeyCode = keyCode
+        val downTime = android.os.SystemClock.uptimeMillis()
+        repeatDownTime = downTime
+        val signal = CompletableDeferred<Boolean>()
+        downSentSignal = signal
+        // 首键 DOWN：独立协程发送，绝不挂在会被 stopKeyRepeat 取消的 job 上
+        viewModelScope.launch {
+            val ok = repo.sendKeyDown(keyCode, downTime, repeatCount = 0, eventTime = downTime)
+            signal.complete(ok)
+            if (!ok && repeatKeyCode == keyCode) repeatKeyCode = null
+        }
+        // 连发循环：可取消（stopKeyRepeat 时 cancel 掉剩余连发帧）
         repeatJob = viewModelScope.launch {
-            val downTime = android.os.SystemClock.uptimeMillis()
-            repeatDownTime = downTime
-            if (!repo.sendKeyDown(keyCode, downTime, repeatCount = 0, eventTime = downTime)) {
-                repeatKeyCode = null
-                return@launch
-            }
             var repeat = 1
             while (isActive) {
                 delay(180)
+                if (repeatKeyCode != keyCode) return@launch
                 val now = android.os.SystemClock.uptimeMillis()
-                if (!repo.sendKeyDown(keyCode, downTime, repeatCount = repeat, eventTime = now)) break
+                if (!repo.sendKeyDown(keyCode, downTime, repeatCount = repeat, eventTime = now)) return@launch
                 repeat++
             }
         }
@@ -295,8 +311,16 @@ class TvViewModel(
     private fun releaseRepeatedKey(attempt: Int = 0) {
         val code = repeatKeyCode ?: return
         val downTime = repeatDownTime
+        val signal = downSentSignal
         repeatKeyCode = null
+        downSentSignal = null
         viewModelScope.launch {
+            // 等 DOWN 落地再补 UP：UP 早于 DOWN 到达会被电视按 downTime 配对丢弃，导致按键楔死。
+            // DOWN 结论为失败则不需要 UP；最多等 500ms，超时仍发 UP 兜底（DOWN 若还在路上，配对的 UP 正好释放它）。
+            val downOk = withTimeoutOrNull(500) {
+                signal?.await() ?: true
+            } ?: true
+            if (!downOk) return@launch
             val now = android.os.SystemClock.uptimeMillis()
             val ok = repo.sendKeyUp(code, downTime, eventTime = now)
             if (!ok && attempt < 3) {
