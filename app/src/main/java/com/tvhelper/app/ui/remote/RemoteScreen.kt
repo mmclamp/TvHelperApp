@@ -145,47 +145,7 @@ fun RemoteScreen(vm: TvViewModel, onGoConnect: () -> Unit = {}) {
                 }
             }
         } else {
-            // 卡片顺序按使用频率：音量（最高频）→ 方向键 → 功能键 → 播放控制
-            item {
-                TvCard {
-                    Column {
-                        SectionTitle("音量")
-                        if (tvVolume != null) {
-                            Spacer(Modifier.height(2.dp))
-                            Text(
-                                "当前 $tvVolume / 最大 $tvVolumeMax",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Spacer(Modifier.height(6.dp))
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        ) {
-                            VolumeButton(
-                                label = if (tvVolume != null) "− ($tvVolume)" else "音量 −",
-                                enabled = connected,
-                                modifier = Modifier.weight(1f),
-                                onPress = { vm.adjustVolume(up = false) },
-                            )
-                            VolumeButton(
-                                label = if (tvVolume != null) "＋ ($tvVolume)" else "音量 ＋",
-                                enabled = connected,
-                                modifier = Modifier.weight(1f),
-                                onPress = { vm.adjustVolume(up = true) },
-                            )
-                        }
-                        Spacer(Modifier.height(10.dp))
-                        MuteToggle(
-                            muted = tvMuted,
-                            enabled = connected,
-                            onToggle = { vm.toggleMute() },
-                        )
-                    }
-                }
-            }
-
+            // 卡片顺序按使用频率：方向键 → 功能键（含音量/静音）→ 播放控制
             item {
                 TvCard {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -199,7 +159,7 @@ fun RemoteScreen(vm: TvViewModel, onGoConnect: () -> Unit = {}) {
             item {
                 TvCard {
                     Column {
-                        SectionTitle("功能键")
+                        SectionTitle("功能键与音量")
                         Spacer(Modifier.height(6.dp))
                         Row(
                             Modifier.fillMaxWidth(),
@@ -232,6 +192,39 @@ fun RemoteScreen(vm: TvViewModel, onGoConnect: () -> Unit = {}) {
                             Text("菜单", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Text("电源", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
+                        // 音量/静音并入本卡，不再单独占一张卡
+                        Spacer(Modifier.height(14.dp))
+                        if (tvVolume != null) {
+                            Text(
+                                "当前 $tvVolume / 最大 $tvVolumeMax",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.height(4.dp))
+                        }
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            VolumeButton(
+                                label = if (tvVolume != null) "− ($tvVolume)" else "音量 −",
+                                enabled = connected,
+                                modifier = Modifier.weight(1f),
+                                onPress = { vm.adjustVolume(up = false) },
+                            )
+                            VolumeButton(
+                                label = if (tvVolume != null) "＋ ($tvVolume)" else "音量 ＋",
+                                enabled = connected,
+                                modifier = Modifier.weight(1f),
+                                onPress = { vm.adjustVolume(up = true) },
+                            )
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        MuteToggle(
+                            muted = tvMuted,
+                            enabled = connected,
+                            onToggle = { vm.toggleMute() },
+                        )
                     }
                 }
             }

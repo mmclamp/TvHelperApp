@@ -10,6 +10,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -120,13 +122,17 @@ fun SettingsScreen(vm: TvViewModel) {
     }
 }
 
-/** 强调色色板：圆形色块，选中画勾 + 描边 */
+/** 强调色色板：圆形色块，选中画勾 + 描边；FlowRow 放不下自动换行（窄屏 6 个一行装不下） */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun AccentPicker(
     selected: SettingsStore.AccentColor,
     onSelect: (SettingsStore.AccentColor) -> Unit,
 ) {
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
         SettingsStore.AccentColor.entries.forEach { c ->
             val isSel = selected == c
             Box(
