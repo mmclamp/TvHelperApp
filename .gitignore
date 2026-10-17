@@ -13,6 +13,10 @@ captures/
 # Local config
 local.properties
 
+# Release signing (never commit)
+keystore/
+keystore.properties
+
 # Build outputs
 app/build/
 *.apk
