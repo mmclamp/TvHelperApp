@@ -1,6 +1,8 @@
 package com.tvhelper.app.ui.remote
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -38,6 +40,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
@@ -64,6 +67,7 @@ fun RemoteScreen(vm: TvViewModel) {
     val connection by vm.connection.collectAsState()
     val tvVolume by vm.tvVolume.collectAsState()
     val tvVolumeMax by vm.tvVolumeMax.collectAsState()
+    val tvMuted by vm.tvMuted.collectAsState()
     val connected = connection.isConnected
     var trackpadMode by remember { mutableStateOf(false) }
 
@@ -178,6 +182,12 @@ fun RemoteScreen(vm: TvViewModel) {
                                 onPress = { vm.adjustVolume(up = true) },
                             )
                         }
+                        Spacer(Modifier.height(10.dp))
+                        MuteToggle(
+                            muted = tvMuted,
+                            enabled = connected,
+                            onToggle = { vm.toggleMute() },
+                        )
                     }
                 }
             }
@@ -350,6 +360,54 @@ private fun VolumeButton(
         }
     }
 }
+
+@Composable
+private fun MuteToggle(
+    muted: Boolean?,
+    enabled: Boolean,
+    onToggle: () -> Unit,
+) {
+    // 明显的三态视觉切换：已静音=红色实心感，未静音=主题色描边感，未知=中性灰
+    val (label, container, content, border) = when (muted) {
+        true -> Quadruple(
+            "已静音 · 点击解除",
+            TvColors.danger.copy(alpha = 0.20f),
+            TvColors.danger,
+            TvColors.danger.copy(alpha = 0.55f),
+        )
+        false -> Quadruple(
+            "未静音 · 点击静音",
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+            MaterialTheme.colorScheme.primary,
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.45f),
+        )
+        null -> Quadruple(
+            "静音",
+            MaterialTheme.colorScheme.surfaceVariant,
+            MaterialTheme.colorScheme.onSurfaceVariant,
+            Color.Transparent,
+        )
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(46.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(container)
+            .then(if (border != Color.Transparent) Modifier.border(1.5.dp, border, RoundedCornerShape(14.dp)) else Modifier)
+            .clickable(enabled = enabled, onClick = onToggle),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.SemiBold,
+            color = if (enabled) content else content.copy(alpha = 0.4f),
+        )
+    }
+}
+
+private data class Quadruple(val first: String, val second: Color, val third: Color, val fourth: Color)
 
 @Composable
 private fun PowerButton(vm: TvViewModel, enabled: Boolean) {

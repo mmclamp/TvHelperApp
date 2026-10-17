@@ -23,6 +23,7 @@ import com.tvhelper.app.net.NetUtils
 import com.tvhelper.app.net.TvApi
 import com.tvhelper.app.protocol.rc.RcKeyCodec
 import com.tvhelper.app.protocol.rc.RcTouchCodec
+import com.tvhelper.app.protocol.rc.TvKey
 import com.tvhelper.app.protocol.udt.RemoteApp
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
@@ -49,6 +50,7 @@ class TvViewModel(
     val appIcons: StateFlow<Map<String, ByteArray>> = repo.appIcons
     val tvVolume: StateFlow<Int?> = repo.tvVolume
     val tvVolumeMax: StateFlow<Int> = repo.tvVolumeMax
+    val tvMuted: StateFlow<Boolean?> = repo.tvMuted
 
     val pinnedApps: StateFlow<List<PinnedApp>> =
         repo.pinnedApps.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -265,6 +267,21 @@ class TvViewModel(
             val base = repo.tvVolume.value ?: (max / 2)
             val v = if (up) minOf(base + 1, max) else maxOf(base - 1, 0)
             repo.setVolume(v)
+        }
+    }
+
+    /**
+     * 切换静音：优先走 Social setMute（带真实状态回传）；
+     * 电视不支持时降级发 RC MUTE 键（此时状态未知，UI 不显示切换）。
+     */
+    fun toggleMute() {
+        viewModelScope.launch {
+            val current = repo.tvMuted.value
+            val target = !(current ?: false)
+            if (!repo.setMute(target)) {
+                // Social setMute 不可用 → 降级 RC 静音键
+                repo.sendKey(TvKey.MUTE)
+            }
         }
     }
 

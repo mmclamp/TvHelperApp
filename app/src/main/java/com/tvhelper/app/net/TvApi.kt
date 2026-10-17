@@ -79,6 +79,32 @@ class TvApi(private val udt: UdtClient) {
         udt.call(UdtMethods.setVolume(volume, nextId()), UdtMethods.TIMEOUT_DEFAULT),
     )
 
+    /**
+     * 查询静音状态。result 可能是 {"mute":true} / {"value":true} / 裸布尔文本。
+     * 电视不支持该方法（NoSuchMethod 等）返回 null，调用方降级处理。
+     */
+    suspend fun getMute(): Boolean? {
+        val msg = udt.call(UdtMethods.getMute(nextId()), UdtMethods.TIMEOUT_DEFAULT)
+        if (msg.status != null && msg.status != 0) return null
+        val r = msg.result ?: return null
+        if (r.has("mute")) return r.optBoolean("mute")
+        if (r.has("value")) return r.optBoolean("value")
+        if (r.has("data")) return r.optBoolean("data")
+        return null
+    }
+
+    /** 设置静音；返回电视确认的静音状态，失败 null */
+    suspend fun setMute(mute: Boolean): Boolean? {
+        val msg = udt.call(UdtMethods.setMute(mute, nextId()), UdtMethods.TIMEOUT_DEFAULT)
+        if (msg.status != null && msg.status != 0) return null
+        val r = msg.result ?: return null
+        // {"code":0,"message":"success"} 表示成功但不含状态；含 mute 字段时优先用真实值
+        if (r.has("mute")) return r.optBoolean("mute")
+        if (r.has("value")) return r.optBoolean("value")
+        val code = r.optInt("code", Int.MIN_VALUE)
+        return if (code == 0) mute else null
+    }
+
     private fun volumeFrom(msg: UdtCodec.Message): Pair<Int, Int>? {
         val ok = msg.status
         val r = msg.result
