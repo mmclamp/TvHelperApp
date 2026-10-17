@@ -187,25 +187,42 @@ fun RemoteScreen(vm: TvViewModel, onGoConnect: () -> Unit = {}) {
                             LabeledKey("音量减", enabled = connected, onPress = { vm.adjustVolume(up = false) }) {
                                 Text("−", style = MaterialTheme.typography.headlineSmall)
                             }
-                            // 当前音量：纯数字「4 / 100」上下两行，无引导文本
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Box(
-                                    Modifier.height(62.dp),
-                                    contentAlignment = Alignment.Center,
-                                ) {
+                            // 当前音量：数字在上、横杆分隔、最大值在下；未获取时只显示横杆；
+                            // 整块与音量按钮同高（62dp）垂直居中
+                            Box(
+                                Modifier.height(62.dp),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                if (tvVolume != null) {
                                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                         Text(
-                                            tvVolume?.toString() ?: "—",
+                                            tvVolume.toString(),
                                             style = MaterialTheme.typography.titleLarge,
                                             fontWeight = FontWeight.Bold,
                                             color = MaterialTheme.colorScheme.onSurface,
                                         )
+                                        Box(
+                                            Modifier
+                                                .width(26.dp)
+                                                .height(1.5.dp)
+                                                .clip(RoundedCornerShape(1.dp))
+                                                .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)),
+                                        )
                                         Text(
-                                            if (tvVolume != null) "/$tvVolumeMax" else "",
+                                            tvVolumeMax.toString(),
                                             style = MaterialTheme.typography.labelMedium,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         )
                                     }
+                                } else {
+                                    // 未获取到音量：横杆占位
+                                    Box(
+                                        Modifier
+                                            .width(26.dp)
+                                            .height(2.dp)
+                                            .clip(RoundedCornerShape(1.dp))
+                                            .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)),
+                                    )
                                 }
                             }
                             LabeledKey("音量加", enabled = connected, onPress = { vm.adjustVolume(up = true) }) {
