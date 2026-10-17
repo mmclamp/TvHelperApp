@@ -28,6 +28,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.tvhelper.app.BuildConfig
 import com.tvhelper.app.data.SettingsStore
 import com.tvhelper.app.ui.common.TvCard
 import com.tvhelper.app.vm.TvViewModel
@@ -98,7 +99,7 @@ fun SettingsScreen(vm: TvViewModel) {
         SectionLabel("关于")
         TvCard {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                SettingRow("版本", "1.7.0")
+                SettingRow("版本", BuildConfig.VERSION_NAME)
                 SettingRow("协议", "AirKan / milink UDT（加密通道）")
                 SettingRow("支持设备", "小米 / 红米 MIUI TV")
             }

@@ -255,7 +255,8 @@ class TvViewModel(
     /**
      * 音量连发：原版 SocialRequest.setVolume 走 UDT 通道直接设绝对值（逆向确认，
      * RC 按键/播放控制帧电视都不理）。按下一次 ±1，长按每 200ms ±1；
-     * 发送失败立即停。电视响应到达后回填真实值。
+     * 发送失败立即停。电视响应到达后回填真实值（Repository 内 NonCancellable，
+     * 快速单击松手取消协程也不会丢响应结论）。
      */
     fun startVolumeRepeat(up: Boolean) {
         stopVolumeRepeat()
@@ -263,7 +264,9 @@ class TvViewModel(
             val max = repo.tvVolumeMax.value
             var v = repo.tvVolume.value ?: (max / 2)
             while (isActive) {
-                v = if (up) minOf(v + 1, max) else maxOf(v - 1, 0)
+                // 每轮以缓存里的电视真实值为基准，自校准防漂移
+                val base = repo.tvVolume.value ?: v
+                v = if (up) minOf(base + 1, max) else maxOf(base - 1, 0)
                 if (!repo.setVolume(v)) break
                 delay(200)
             }

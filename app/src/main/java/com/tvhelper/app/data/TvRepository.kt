@@ -42,6 +42,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
@@ -721,26 +722,35 @@ class TvRepository(
         }
     }
 
+    /** 音量请求串行化：Social 9093 单连接，同时只允许一个在途音量请求 */
+    private val volumeMutex = Mutex()
+
     /**
      * 设置电视音量（绝对值）。原版 SocialRequest.setVolume 走 UDT 通道
      * （逆向确认：遥控场景音量不走 RC 按键/播放控制帧，HTTP 旧接口仅限旧机型）。
      * 返回 false 表示发送/解析失败，调用方应停止连发。
+     *
+     * 关键：响应回填放在 NonCancellable —— 连发协程被取消（松手）时，
+     * 已发出的请求其结论必须写回缓存，否则缓存停滞导致后续点击重复发同一值。
      */
     suspend fun setVolume(volume: Int): Boolean {
         val a = socialApi ?: api ?: return false
         return try {
-            val resp = a.setVolume(volume)
-            if (resp != null) {
-                _tvVolume.value = resp.first
-                _tvVolumeMax.value = resp.second
-                true
-            } else {
-                // 无响应体但请求成功时乐观回填
-                _tvVolume.value = volume.coerceIn(0, _tvVolumeMax.value)
+            volumeMutex.withLock {
+                val resp = withContext(NonCancellable) { a.setVolume(volume) }
+                if (resp != null) {
+                    _tvVolume.value = resp.first
+                    _tvVolumeMax.value = resp.second
+                } else {
+                    // 无响应体但请求成功时乐观回填
+                    _tvVolume.value = volume.coerceIn(0, _tvVolumeMax.value)
+                }
                 true
             }
         } catch (t: Throwable) {
-            Log.w(TAG, "音量设置失败：${t.message}")
+            if (t !is kotlinx.coroutines.CancellationException) {
+                Log.w(TAG, "音量设置失败：${t.message}")
+            }
             false
         }
     }
@@ -749,17 +759,22 @@ class TvRepository(
     fun queryVolume() {
         val a = socialApi ?: api ?: return
         scope.launch {
-            runCatching { a.getVolume() }
-                .onSuccess { resp ->
-                    if (resp != null) {
-                        _tvVolume.value = resp.first
-                        _tvVolumeMax.value = resp.second
-                        Log.i(TAG, "电视音量：${resp.first}/${resp.second}")
-                    } else {
-                        Log.w(TAG, "音量查询无结果（方法可能不受支持）")
-                    }
+            try {
+                volumeMutex.withLock {
+                    withContext(NonCancellable) { a.getVolume() }
                 }
-                .onFailure { Log.w(TAG, "音量查询失败：${it.message}") }
+            } catch (t: Throwable) {
+                Log.w(TAG, "音量查询失败：${t.message}")
+                null
+            }?.let { resp ->
+                if (resp != null) {
+                    _tvVolume.value = resp.first
+                    _tvVolumeMax.value = resp.second
+                    Log.i(TAG, "电视音量：${resp.first}/${resp.second}")
+                } else {
+                    Log.w(TAG, "音量查询无结果（方法可能不受支持）")
+                }
+            }
         }
     }
 
