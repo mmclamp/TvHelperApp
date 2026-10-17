@@ -39,6 +39,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -186,7 +187,7 @@ fun RemoteScreen(vm: TvViewModel, onGoConnect: () -> Unit = {}) {
                             LabeledKey("音量减", enabled = connected, onPress = { vm.adjustVolume(up = false) }) {
                                 Text("−", style = MaterialTheme.typography.headlineSmall)
                             }
-                            // 当前音量：与按钮同高的居中块 + 对齐的「当前音量」标签
+                            // 当前音量：纯数字「4 / 100」上下两行，无引导文本
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Box(
                                     Modifier.height(62.dp),
@@ -200,21 +201,18 @@ fun RemoteScreen(vm: TvViewModel, onGoConnect: () -> Unit = {}) {
                                             color = MaterialTheme.colorScheme.onSurface,
                                         )
                                         Text(
-                                            if (tvVolume != null) "最大 $tvVolumeMax" else "未获取",
-                                            style = MaterialTheme.typography.labelSmall,
+                                            if (tvVolume != null) "/$tvVolumeMax" else "",
+                                            style = MaterialTheme.typography.labelMedium,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         )
                                     }
                                 }
-                                Spacer(Modifier.height(6.dp))
-                                Text("当前音量", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             LabeledKey("音量加", enabled = connected, onPress = { vm.adjustVolume(up = true) }) {
                                 Text("＋", style = MaterialTheme.typography.headlineSmall)
                             }
                             LabeledKey(
-                                label = if (tvMuted == true) "已静音 · 点击解除" else "静音",
-                                labelColor = if (tvMuted == true) TvColors.danger else MaterialTheme.colorScheme.onSurfaceVariant,
+                                label = "静音",
                                 enabled = connected,
                                 onPress = { vm.toggleMute() },
                                 container = if (tvMuted == true) TvColors.danger.copy(alpha = 0.16f)
@@ -223,7 +221,7 @@ fun RemoteScreen(vm: TvViewModel, onGoConnect: () -> Unit = {}) {
                                     else MaterialTheme.colorScheme.onSurfaceVariant,
                                 borderColor = if (tvMuted == true) TvColors.danger.copy(alpha = 0.4f) else null,
                             ) {
-                                Text("静音", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold)
+                                MuteIcon(muted = tvMuted == true, modifier = Modifier.size(24.dp))
                             }
                         }
                     }
@@ -414,6 +412,50 @@ private fun PowerButton(vm: TvViewModel, enabled: Boolean) {
                 TextButton(onClick = { confirmPower = false }) { Text("取消") }
             },
         )
+    }
+}
+
+/** 自绘静音图标：喇叭 + 声波（未静音）/ 喇叭 + 叉（已静音）。icons-core 无 Volume 系列，Canvas 自绘 */
+@Composable
+private fun MuteIcon(muted: Boolean, modifier: Modifier = Modifier) {
+    val tint = LocalContentColor.current
+    androidx.compose.foundation.Canvas(modifier = modifier) {
+        val u = size.minDimension / 24f
+        fun o(x: Float, y: Float) = androidx.compose.ui.geometry.Offset(x * u, y * u)
+        val stroke = androidx.compose.ui.graphics.drawscope.Stroke(
+            width = 1.9f * u,
+            cap = androidx.compose.ui.graphics.StrokeCap.Round,
+            join = androidx.compose.ui.graphics.StrokeJoin.Round,
+        )
+        // 喇叭本体（实心梯形+矩形）
+        val body = androidx.compose.ui.graphics.Path().apply {
+            moveTo(o(4f, 9.6f).x, o(4f, 9.6f).y)
+            lineTo(o(7.5f, 9.6f).x, o(7.5f, 9.6f).y)
+            lineTo(o(12f, 5.4f).x, o(12f, 5.4f).y)
+            lineTo(o(12f, 18.6f).x, o(12f, 18.6f).y)
+            lineTo(o(7.5f, 14.4f).x, o(7.5f, 14.4f).y)
+            lineTo(o(4f, 14.4f).x, o(4f, 14.4f).y)
+            close()
+        }
+        drawPath(body, tint)
+        if (!muted) {
+            // 声波：两道右向弧线
+            listOf(3.2f, 5.8f).forEach { r ->
+                drawArc(
+                    color = tint,
+                    startAngle = -48f,
+                    sweepAngle = 96f,
+                    useCenter = false,
+                    topLeft = o(12.4f - r, 12f - r),
+                    size = androidx.compose.ui.geometry.Size(2f * r * u, 2f * r * u),
+                    style = stroke,
+                )
+            }
+        } else {
+            // 叉：两道斜线
+            drawLine(tint, o(15.2f, 9.4f), o(20.2f, 14.6f), strokeWidth = 1.9f * u, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+            drawLine(tint, o(20.2f, 9.4f), o(15.2f, 14.6f), strokeWidth = 1.9f * u, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+        }
     }
 }
 

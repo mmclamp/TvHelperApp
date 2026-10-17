@@ -177,6 +177,9 @@ fun RoundButton(
                 if (!enabled) return@pointerInput
                 detectTapGestures(
                     onPress = {
+                        // 按下即震：实测 ColorOS 对抬起后才触发的震动不可靠（快迷点击感觉不到）。
+                        // 这里只承担「摸到键」的手感；动作本身仍是滑出取消、抬起在区内才响应。
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         val press = PressInteraction.Press(it)
                         scope.launch { interaction.emit(press) }
                         // 长按定时器：到系统长按阈值仍未松手则启动连发（onPress=发首键+连发）
@@ -184,8 +187,6 @@ fun RoundButton(
                         val repeatJob = scope.launch {
                             delay(viewConfiguration.longPressTimeoutMillis)
                             longPressStarted = true
-                            // 震动反馈只在动作真正触发时给：滑出取消不震动
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             onPress()
                         }
                         // tryAwaitRelease：区内正常抬起返回 true；手指滑出/手势被取消返回 false
@@ -196,12 +197,8 @@ fun RoundButton(
                             // 连发已启动：停连发（区内抬起和滑出都要停）
                             longPressStarted -> onRelease()
                             // 短按且在区域内：响应一次；对连发按钮=发一键立即停
-                            released -> {
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                onPress()
-                                onRelease()
-                            }
-                            // else：滑出取消，不响应也不震动
+                            released -> { onPress(); onRelease() }
+                            // else：滑出取消，不响应
                         }
                     }
                 )
