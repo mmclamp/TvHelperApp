@@ -160,91 +160,71 @@ fun RemoteScreen(vm: TvViewModel, onGoConnect: () -> Unit = {}) {
                 TvCard {
                     Column {
                         SectionTitle("功能键与音量")
-                        Spacer(Modifier.height(6.dp))
+                        Spacer(Modifier.height(10.dp))
+                        // 按钮和标签包在同一 Column，保证每个标签严格居中于自己的按钮下方
                         Row(
                             Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceEvenly,
                         ) {
-                            RoundButton(
-                                onPress = { vm.sendKey(TvKey.BACK) },
-                                enabled = connected,
-                                size = 62,
-                            ) { Icon(Icons.Default.KeyboardArrowLeft, "返回") }
-                            RoundButton(
-                                onPress = { vm.sendKey(TvKey.HOME) },
-                                enabled = connected,
-                                size = 62,
-                            ) { Icon(Icons.Default.Home, "主页") }
-                            RoundButton(
-                                onPress = { vm.sendKey(TvKey.MENU) },
-                                enabled = connected,
-                                size = 62,
-                            ) { Icon(Icons.Default.Menu, "菜单") }
+                            LabeledKey("返回", enabled = connected, onPress = { vm.sendKey(TvKey.BACK) }) {
+                                Icon(Icons.Default.KeyboardArrowLeft, "返回")
+                            }
+                            LabeledKey("主页", enabled = connected, onPress = { vm.sendKey(TvKey.HOME) }) {
+                                Icon(Icons.Default.Home, "主页")
+                            }
+                            LabeledKey("菜单", enabled = connected, onPress = { vm.sendKey(TvKey.MENU) }) {
+                                Icon(Icons.Default.Menu, "菜单")
+                            }
                             PowerButton(vm = vm, enabled = connected)
                         }
-                        Spacer(Modifier.height(6.dp))
+                        // 音量排：当前音量值显示在减/加之间；静音=红色态
+                        Spacer(Modifier.height(16.dp))
                         Row(
                             Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceEvenly,
                         ) {
-                            Text("返回", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text("主页", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text("菜单", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text("电源", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        // 音量/静音并入本卡，与功能键统一的圆形按钮样式；静音=红色态
-                        Spacer(Modifier.height(14.dp))
-                        if (tvVolume != null) {
-                            Text(
-                                "当前 $tvVolume / 最大 $tvVolumeMax",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            Spacer(Modifier.height(4.dp))
-                        }
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceEvenly,
-                        ) {
-                            RoundButton(
-                                onPress = { vm.adjustVolume(up = false) },
+                            LabeledKey("音量减", enabled = connected, onPress = { vm.adjustVolume(up = false) }) {
+                                Text("−", style = MaterialTheme.typography.headlineSmall)
+                            }
+                            // 当前音量：与按钮同高的居中块 + 对齐的「当前音量」标签
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Box(
+                                    Modifier.height(62.dp),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text(
+                                            tvVolume?.toString() ?: "—",
+                                            style = MaterialTheme.typography.titleLarge,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                        )
+                                        Text(
+                                            if (tvVolume != null) "最大 $tvVolumeMax" else "未获取",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
+                                Spacer(Modifier.height(6.dp))
+                                Text("当前音量", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            LabeledKey("音量加", enabled = connected, onPress = { vm.adjustVolume(up = true) }) {
+                                Text("＋", style = MaterialTheme.typography.headlineSmall)
+                            }
+                            LabeledKey(
+                                label = if (tvMuted == true) "已静音 · 点击解除" else "静音",
+                                labelColor = if (tvMuted == true) TvColors.danger else MaterialTheme.colorScheme.onSurfaceVariant,
                                 enabled = connected,
-                                size = 62,
-                            ) { Text("−", style = MaterialTheme.typography.headlineSmall) }
-                            RoundButton(
-                                onPress = { vm.adjustVolume(up = true) },
-                                enabled = connected,
-                                size = 62,
-                            ) { Text("＋", style = MaterialTheme.typography.headlineSmall) }
-                            RoundButton(
                                 onPress = { vm.toggleMute() },
-                                enabled = connected,
-                                size = 62,
                                 container = if (tvMuted == true) TvColors.danger.copy(alpha = 0.16f)
                                     else MaterialTheme.colorScheme.surfaceVariant,
                                 contentColor = if (tvMuted == true) TvColors.danger
                                     else MaterialTheme.colorScheme.onSurfaceVariant,
                                 borderColor = if (tvMuted == true) TvColors.danger.copy(alpha = 0.4f) else null,
                             ) {
-                                Text(
-                                    "静音",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.SemiBold,
-                                )
+                                Text("静音", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold)
                             }
-                        }
-                        Spacer(Modifier.height(6.dp))
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceEvenly,
-                        ) {
-                            Text("音量减", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text("音量加", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text(
-                                if (tvMuted == true) "已静音 · 点击解除" else "静音",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (tvMuted == true) TvColors.danger else MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
                         }
                     }
                 }
@@ -377,20 +357,50 @@ private fun RepeatKeyButton(
     )
 }
 
+/** 圆形按键 + 下方文字标签：同一 Column 保证标签严格居中于按钮下方 */
+@Composable
+private fun LabeledKey(
+    label: String,
+    enabled: Boolean,
+    onPress: () -> Unit,
+    labelColor: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+    container: Color = MaterialTheme.colorScheme.surfaceVariant,
+    contentColor: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+    borderColor: Color? = null,
+    content: @Composable () -> Unit,
+) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        RoundButton(
+            onPress = onPress,
+            enabled = enabled,
+            size = 62,
+            container = container,
+            contentColor = contentColor,
+            borderColor = borderColor,
+        ) { content() }
+        Spacer(Modifier.height(6.dp))
+        Text(label, style = MaterialTheme.typography.labelSmall, color = labelColor)
+    }
+}
+
 @Composable
 private fun PowerButton(vm: TvViewModel, enabled: Boolean) {
     // 电源是高代价操作（可能直接关电视）：按下抬起后弹确认框，防误触
     var confirmPower by remember { mutableStateOf(false) }
-    RoundButton(
-        onPress = {},
-        onRelease = { confirmPower = true },
-        enabled = enabled,
-        size = 62,
-        container = TvColors.danger.copy(alpha = 0.16f),
-        contentColor = TvColors.danger,
-        borderColor = TvColors.danger.copy(alpha = 0.4f),
-    ) {
-        PowerIcon(tint = TvColors.danger, modifier = Modifier.size(26.dp))
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        RoundButton(
+            onPress = {},
+            onRelease = { confirmPower = true },
+            enabled = enabled,
+            size = 62,
+            container = TvColors.danger.copy(alpha = 0.16f),
+            contentColor = TvColors.danger,
+            borderColor = TvColors.danger.copy(alpha = 0.4f),
+        ) {
+            PowerIcon(tint = TvColors.danger, modifier = Modifier.size(26.dp))
+        }
+        Spacer(Modifier.height(6.dp))
+        Text("电源", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
     if (confirmPower) {
         AlertDialog(
