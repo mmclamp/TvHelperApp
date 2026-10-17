@@ -169,15 +169,13 @@ fun RemoteScreen(vm: TvViewModel) {
                                 label = if (tvVolume != null) "− ($tvVolume)" else "音量 −",
                                 enabled = connected,
                                 modifier = Modifier.weight(1f),
-                                onPress = { vm.startVolumeRepeat(up = false) },
-                                onRelease = { vm.stopVolumeRepeat() },
+                                onPress = { vm.adjustVolume(up = false) },
                             )
                             VolumeButton(
                                 label = if (tvVolume != null) "＋ ($tvVolume)" else "音量 ＋",
                                 enabled = connected,
                                 modifier = Modifier.weight(1f),
-                                onPress = { vm.startVolumeRepeat(up = true) },
-                                onRelease = { vm.stopVolumeRepeat() },
+                                onPress = { vm.adjustVolume(up = true) },
                             )
                         }
                     }
@@ -236,7 +234,7 @@ fun RemoteScreen(vm: TvViewModel) {
                         }
                         Spacer(Modifier.height(8.dp))
                         Text(
-                            "方向键 / 音量键支持长按连发；电源键为短按（长按需电视端 longPressPower 权限）。",
+                            "方向键支持长按连发；音量键单击一次 ±1（长按无连发）。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -331,7 +329,7 @@ private fun VolumeButton(
     enabled: Boolean,
     modifier: Modifier = Modifier,
     onPress: () -> Unit,
-    onRelease: () -> Unit,
+    onRelease: () -> Unit = {},
 ) {
     Box(
         modifier = modifier
