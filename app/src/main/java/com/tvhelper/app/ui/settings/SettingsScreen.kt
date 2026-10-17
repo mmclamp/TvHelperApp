@@ -10,14 +10,14 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -122,18 +122,14 @@ fun SettingsScreen(vm: TvViewModel) {
     }
 }
 
-/** 强调色色板：圆形色块，选中画勾 + 描边；FlowRow 放不下自动换行（窄屏 6 个一行装不下） */
-@OptIn(ExperimentalLayoutApi::class)
+/** 强调色色板：圆形色块，选中画勾 + 描边；固定单行，放不下横向滑动 */
 @Composable
 private fun AccentPicker(
     selected: SettingsStore.AccentColor,
     onSelect: (SettingsStore.AccentColor) -> Unit,
 ) {
-    FlowRow(
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        SettingsStore.AccentColor.entries.forEach { c ->
+    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        items(SettingsStore.AccentColor.entries) { c ->
             val isSel = selected == c
             Box(
                 modifier = Modifier
