@@ -23,6 +23,7 @@ import com.tvhelper.app.protocol.rc.RcCodec
 import com.tvhelper.app.protocol.rc.RcKeyCodec
 import com.tvhelper.app.protocol.rc.RcPlayControlCodec
 import com.tvhelper.app.protocol.rc.RcTouchCodec
+import com.tvhelper.app.protocol.rc.TvKey
 import com.tvhelper.app.protocol.rc.RcVersionCodec
 import com.tvhelper.app.protocol.udt.RemoteApp
 import com.tvhelper.app.service.ConnectionService
@@ -113,9 +114,9 @@ class TvRepository(
     private val _tvVolumeMax = MutableStateFlow(100)
     val tvVolumeMax: StateFlow<Int> = _tvVolumeMax
 
-    /** 电视静音状态：null=未知（通道未就绪或电视不支持 getMute） */
-    private val _tvMuted = MutableStateFlow<Boolean?>(null)
-    val tvMuted: StateFlow<Boolean?> = _tvMuted
+    /** 电视静音状态：RC MUTE 键切换后本地跟踪；调音量会自动解除静音（电视行为）→ 回填 false */
+    private val _tvMuted = MutableStateFlow(false)
+    val tvMuted: StateFlow<Boolean> = _tvMuted
 
     private val _notices = MutableSharedFlow<Notice>(extraBufferCapacity = 32)
     val notices: SharedFlow<Notice> = _notices
@@ -682,7 +683,7 @@ class TvRepository(
         socialUdt = null
         socialApi = null
         _tvVolume.value = null
-        _tvMuted.value = null
+        _tvMuted.value = false
         _installedApps.value = emptyList()
     }
 
@@ -731,6 +732,19 @@ class TvRepository(
     private val volumeMutex = Mutex()
 
     /**
+     * 切换静音：Social setMute 电视实测不支持（无效果），走 RC MUTE 键（实测有效）。
+     * 电视不回报告静音状态，App 侧本地跟踪：发送成功后翻转本地状态。
+     */
+    suspend fun toggleMuteKey(): Boolean {
+        val ok = sendKey(TvKey.MUTE)
+        if (ok) {
+            _tvMuted.value = !(_tvMuted.value)
+            Log.i(TAG, "静音切换 → ${_tvMuted.value}")
+        }
+        return ok
+    }
+
+    /**
      * 设置电视音量（绝对值）。原版 SocialRequest.setVolume 走 UDT 通道
      * （逆向确认：遥控场景音量不走 RC 按键/播放控制帧，HTTP 旧接口仅限旧机型）。
      * 返回 false 表示发送/解析失败，调用方应停止连发。
@@ -750,6 +764,8 @@ class TvRepository(
                     // 无响应体但请求成功时乐观回填
                     _tvVolume.value = volume.coerceIn(0, _tvVolumeMax.value)
                 }
+                // 电视行为：调节音量会自动解除静音，同步本地状态
+                _tvMuted.value = false
                 true
             }
         } catch (t: Throwable) {
@@ -771,7 +787,7 @@ class TvRepository(
             } catch (t: Throwable) {
                 Log.w(TAG, "音量查询失败：${t.message}")
                 null
-            }?.let { resp ->
+            }            ?.let { resp ->
                 if (resp != null) {
                     _tvVolume.value = resp.first
                     _tvVolumeMax.value = resp.second
@@ -780,45 +796,6 @@ class TvRepository(
                     Log.w(TAG, "音量查询无结果（方法可能不受支持）")
                 }
             }
-        }
-        queryMute()
-    }
-
-    /** 查询静音状态；电视不支持时保持 null，UI 降级为无状态切换按钮 */
-    private fun queryMute() {
-        val a = socialApi ?: api ?: return
-        scope.launch {
-            try {
-                volumeMutex.withLock {
-                    withContext(NonCancellable) { a.getMute() }
-                }
-            } catch (t: Throwable) {
-                Log.w(TAG, "静音查询失败：${t.message}")
-                null
-            }?.let { muted ->
-                _tvMuted.value = muted
-                Log.i(TAG, "电视静音状态：$muted")
-            }
-        }
-    }
-
-    /**
-     * 设置静音（Social 9093 setMute）。请求发出后乐观回填，
-     * 再用 getMute 校准真实状态；电视不支持时返回 false 由 UI 降级。
-     */
-    suspend fun setMute(mute: Boolean): Boolean {
-        val a = socialApi ?: api ?: return false
-        return try {
-            volumeMutex.withLock {
-                val confirmed = withContext(NonCancellable) { a.setMute(mute) }
-                _tvMuted.value = confirmed ?: mute
-                true
-            }.also { if (it) queryMute() }
-        } catch (t: Throwable) {
-            if (t !is kotlinx.coroutines.CancellationException) {
-                Log.w(TAG, "静音设置失败：${t.message}")
-            }
-            false
         }
     }
 

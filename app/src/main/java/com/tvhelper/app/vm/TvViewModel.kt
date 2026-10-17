@@ -271,17 +271,12 @@ class TvViewModel(
     }
 
     /**
-     * 切换静音：优先走 Social setMute（带真实状态回传）；
-     * 电视不支持时降级发 RC MUTE 键（此时状态未知，UI 不显示切换）。
+     * 切换静音：Social setMute 电视实测不支持，走 RC MUTE 键（实测有效）。
+     * 状态由 Repository 本地跟踪（调音量自动视为解除静音）。
      */
     fun toggleMute() {
         viewModelScope.launch {
-            val current = repo.tvMuted.value
-            val target = !(current ?: false)
-            if (!repo.setMute(target)) {
-                // Social setMute 不可用 → 降级 RC 静音键
-                repo.sendKey(TvKey.MUTE)
-            }
+            repo.toggleMuteKey()
         }
     }
 

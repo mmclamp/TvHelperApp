@@ -179,7 +179,7 @@ fun RoundButton(
     }
 }
 
-/** 胶囊型文字按键 */
+/** 胶囊型文字按键（带按压缩放 + 变色反馈） */
 @Composable
 fun PillButton(
     text: String,
@@ -188,25 +188,37 @@ fun PillButton(
     selected: Boolean = false,
     enabled: Boolean = true,
 ) {
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
     val bg = when {
         !enabled -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+        pressed -> MaterialTheme.colorScheme.primary.copy(alpha = 0.26f)
         selected -> MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
         else -> MaterialTheme.colorScheme.surfaceVariant
     }
     val fg = when {
         !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-        selected -> MaterialTheme.colorScheme.primary
+        pressed || selected -> MaterialTheme.colorScheme.primary
         else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
+    val scale by animateFloatAsState(if (pressed) 0.94f else 1f, label = "pillScale")
     Box(
         modifier = modifier
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
             .clip(RoundedCornerShape(50))
             .background(bg)
-            .clickable(enabled = enabled) { onClick() }
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                enabled = enabled,
+            ) { onClick() }
             .padding(horizontal = 16.dp, vertical = 9.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text(text, style = MaterialTheme.typography.labelLarge, color = fg)
+        Text(text, style = MaterialTheme.typography.labelLarge, color = fg, fontWeight = if (pressed) FontWeight.SemiBold else FontWeight.Medium)
     }
 }
 

@@ -34,13 +34,10 @@ object UdtMethods {
     const val LONG_PRESS_POWER = "longPressPower"
     const val REMOVE_APP_INSTALL_PROGRESS = "removeAppInstallProgress"
 
-    /** 音量：原版 com.xiaomi.mitv.phone.tvassistant.udt.SocialRequest 接口同款方法名 */
+    /** 音量：原版 com.xiaomi.mitv.phone.tvassistant.udt.SocialRequest 接口同款方法名。
+     *  注：同族 setMute/getMute 电视实测反射不支持，静音走 RC MUTE 键 */
     const val GET_VOLUME = "getVolume"
     const val SET_VOLUME = "setVolume"
-
-    /** 静音：SocialRequest 同族方法，参数/响应格式与音量同路数 */
-    const val GET_MUTE = "getMute"
-    const val SET_MUTE = "setMute"
 
     /** 电视端定义的应用安装状态 */
     const val APP_STATUS_UNINSTALL = 0
@@ -156,20 +153,6 @@ object UdtMethods {
     fun setVolume(volume: Int, id: Int): UdtCodec.Request = UdtCodec.Request(
         requestId = UdtCodec.newRequestId(),
         call = call(SET_VOLUME, listOf(volume), useDataChannelReturn = true, prefixTs = false),
-        id = id,
-    )
-
-    /** 查询静音状态；TV 端反射调用无参 getMute()，不带 ts 前缀 */
-    fun getMute(id: Int): UdtCodec.Request = UdtCodec.Request(
-        requestId = UdtCodec.newRequestId(),
-        call = call(GET_MUTE, null, useDataChannelReturn = true, prefixTs = false),
-        id = id,
-    )
-
-    /** 设置静音；原版 SocialRequest.setMute(boolean) 同款，单布尔参无 ts 前缀 */
-    fun setMute(mute: Boolean, id: Int): UdtCodec.Request = UdtCodec.Request(
-        requestId = UdtCodec.newRequestId(),
-        call = call(SET_MUTE, listOf(mute), useDataChannelReturn = true, prefixTs = false),
         id = id,
     )
 

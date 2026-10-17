@@ -1,9 +1,12 @@
 package com.tvhelper.app.ui.remote
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -40,10 +43,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -230,9 +236,6 @@ fun RemoteScreen(vm: TvViewModel) {
                         SectionTitle("其他")
                         Spacer(Modifier.height(6.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            PillButton("静音", onClick = {
-                                vm.sendKey(TvKey.MUTE)
-                            }, enabled = connected)
                             PillButton("上一曲", onClick = { vm.sendKey(TvKey.MEDIA_PREVIOUS) }, enabled = connected)
                             PillButton("下一曲", onClick = { vm.sendKey(TvKey.MEDIA_NEXT) }, enabled = connected)
                         }
@@ -341,23 +344,49 @@ private fun VolumeButton(
     onPress: () -> Unit,
     onRelease: () -> Unit = {},
 ) {
+    // 整块即点击区域：按压缩放 + 变色 + 触觉反馈，手感明显
+    var pressed by remember { mutableStateOf(false) }
+    val haptic = LocalHapticFeedback.current
+    val scale by animateFloatAsState(if (pressed) 0.94f else 1f, label = "volScale")
+    val bg by animateColorAsState(
+        targetValue = when {
+            !enabled -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+            pressed -> MaterialTheme.colorScheme.primary.copy(alpha = 0.26f)
+            else -> MaterialTheme.colorScheme.surfaceVariant
+        },
+        label = "volBg",
+    )
     Box(
         modifier = modifier
-            .height(56.dp)
+            .height(58.dp)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
             .clip(RoundedCornerShape(16.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant),
+            .background(bg)
+            .pointerInput(enabled) {
+                if (!enabled) return@pointerInput
+                detectTapGestures(
+                    onPress = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        pressed = true
+                        onPress()
+                        tryAwaitRelease()
+                        pressed = false
+                        onRelease()
+                    }
+                )
+            },
         contentAlignment = Alignment.Center,
     ) {
-        RoundButton(
-            onPress = onPress,
-            onRelease = onRelease,
-            enabled = enabled,
-            size = 56,
-            container = androidx.compose.ui.graphics.Color.Transparent,
-            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-        ) {
-            Text(label, style = MaterialTheme.typography.labelLarge, textAlign = TextAlign.Center)
-        }
+        Text(
+            label,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            textAlign = TextAlign.Center,
+            color = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f),
+        )
     }
 }
 
