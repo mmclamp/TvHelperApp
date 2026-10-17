@@ -192,7 +192,7 @@ fun RemoteScreen(vm: TvViewModel, onGoConnect: () -> Unit = {}) {
                             Text("菜单", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Text("电源", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        // 音量/静音并入本卡，不再单独占一张卡
+                        // 音量/静音并入本卡，与功能键统一的圆形按钮样式；静音=红色态
                         Spacer(Modifier.height(14.dp))
                         if (tvVolume != null) {
                             Text(
@@ -204,27 +204,48 @@ fun RemoteScreen(vm: TvViewModel, onGoConnect: () -> Unit = {}) {
                         }
                         Row(
                             Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            horizontalArrangement = Arrangement.SpaceEvenly,
                         ) {
-                            VolumeButton(
-                                label = if (tvVolume != null) "− ($tvVolume)" else "音量 −",
-                                enabled = connected,
-                                modifier = Modifier.weight(1f),
+                            RoundButton(
                                 onPress = { vm.adjustVolume(up = false) },
-                            )
-                            VolumeButton(
-                                label = if (tvVolume != null) "＋ ($tvVolume)" else "音量 ＋",
                                 enabled = connected,
-                                modifier = Modifier.weight(1f),
+                                size = 62,
+                            ) { Text("−", style = MaterialTheme.typography.headlineSmall) }
+                            RoundButton(
                                 onPress = { vm.adjustVolume(up = true) },
+                                enabled = connected,
+                                size = 62,
+                            ) { Text("＋", style = MaterialTheme.typography.headlineSmall) }
+                            RoundButton(
+                                onPress = { vm.toggleMute() },
+                                enabled = connected,
+                                size = 62,
+                                container = if (tvMuted == true) TvColors.danger.copy(alpha = 0.16f)
+                                    else MaterialTheme.colorScheme.surfaceVariant,
+                                contentColor = if (tvMuted == true) TvColors.danger
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                                borderColor = if (tvMuted == true) TvColors.danger.copy(alpha = 0.4f) else null,
+                            ) {
+                                Text(
+                                    "静音",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceEvenly,
+                        ) {
+                            Text("音量减", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("音量加", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(
+                                if (tvMuted == true) "已静音 · 点击解除" else "静音",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (tvMuted == true) TvColors.danger else MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
-                        Spacer(Modifier.height(10.dp))
-                        MuteToggle(
-                            muted = tvMuted,
-                            enabled = connected,
-                            onToggle = { vm.toggleMute() },
-                        )
                     }
                 }
             }
@@ -355,127 +376,6 @@ private fun RepeatKeyButton(
         content = content,
     )
 }
-
-@Composable
-private fun VolumeButton(
-    label: String,
-    enabled: Boolean,
-    modifier: Modifier = Modifier,
-    onPress: () -> Unit,
-    onRelease: () -> Unit = {},
-) {
-    // 整块即点击区域：按压缩放 + 变色 + 触觉反馈 + 波纹，手感明显
-    var pressed by remember { mutableStateOf(false) }
-    val interaction = remember { MutableInteractionSource() }
-    val haptic = LocalHapticFeedback.current
-    val scope = rememberCoroutineScope()
-    val scale by animateFloatAsState(if (pressed) 0.94f else 1f, label = "volScale")
-    val bg by animateColorAsState(
-        targetValue = when {
-            !enabled -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
-            pressed -> MaterialTheme.colorScheme.primary.copy(alpha = 0.26f)
-            else -> MaterialTheme.colorScheme.surfaceVariant
-        },
-        label = "volBg",
-    )
-    Box(
-        modifier = modifier
-            .height(58.dp)
-            .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-            }
-            .clip(RoundedCornerShape(16.dp))
-            .background(bg)
-            .indication(interaction, ripple(bounded = true))
-            .pointerInput(enabled) {
-                if (!enabled) return@pointerInput
-                detectTapGestures(
-                    onPress = {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        pressed = true
-                        val press = PressInteraction.Press(it)
-                        scope.launch { interaction.emit(press) }
-                        // 标准 Android 按钮语义：抬起时手指仍在区域内才响应，滑出即取消
-                        val released = tryAwaitRelease()
-                        scope.launch { interaction.emit(PressInteraction.Release(press)) }
-                        pressed = false
-                        if (released) onPress()
-                        onRelease()
-                    }
-                )
-            },
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            label,
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold,
-            textAlign = TextAlign.Center,
-            color = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f),
-        )
-    }
-}
-
-@Composable
-private fun MuteToggle(
-    muted: Boolean?,
-    enabled: Boolean,
-    onToggle: () -> Unit,
-) {
-    // 明显的三态视觉切换：已静音=红色实心感，未静音=主题色描边感，未知=中性灰
-    val (label, container, content, border) = when (muted) {
-        true -> Quadruple(
-            "已静音 · 点击解除",
-            TvColors.danger.copy(alpha = 0.20f),
-            TvColors.danger,
-            TvColors.danger.copy(alpha = 0.55f),
-        )
-        false -> Quadruple(
-            "未静音 · 点击静音",
-            MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
-            MaterialTheme.colorScheme.primary,
-            MaterialTheme.colorScheme.primary.copy(alpha = 0.45f),
-        )
-        null -> Quadruple(
-            "静音",
-            MaterialTheme.colorScheme.surfaceVariant,
-            MaterialTheme.colorScheme.onSurfaceVariant,
-            Color.Transparent,
-        )
-    }
-    // 按压时底色加深一档，松手回弹；波纹跟随手指落点
-    val interaction = remember { MutableInteractionSource() }
-    val pressed by interaction.collectIsPressedAsState()
-    val pressedBg by animateColorAsState(
-        targetValue = if (pressed) container.copy(alpha = (container.alpha + 0.22f).coerceAtMost(1f)) else container,
-        label = "muteBg",
-    )
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(46.dp)
-            .clip(RoundedCornerShape(14.dp))
-            .background(pressedBg)
-            .then(if (border != Color.Transparent) Modifier.border(1.5.dp, border, RoundedCornerShape(14.dp)) else Modifier)
-            .clickable(
-                interactionSource = interaction,
-                indication = ripple(bounded = true),
-                enabled = enabled,
-                onClick = onToggle,
-            ),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            label,
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = FontWeight.SemiBold,
-            color = if (enabled) content else content.copy(alpha = 0.4f),
-        )
-    }
-}
-
-private data class Quadruple(val first: String, val second: Color, val third: Color, val fourth: Color)
 
 @Composable
 private fun PowerButton(vm: TvViewModel, enabled: Boolean) {
