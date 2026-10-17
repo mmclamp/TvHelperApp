@@ -1,7 +1,9 @@
 package com.tvhelper.app.ui.connect
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -42,6 +44,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.tvhelper.app.data.ConnectionPhase
+import com.tvhelper.app.data.TvDevice
 import com.tvhelper.app.net.NetUtils
 import com.tvhelper.app.ui.common.EmptyHint
 import com.tvhelper.app.ui.common.PillButton
@@ -61,6 +64,7 @@ fun ConnectScreen(vm: TvViewModel) {
 
     var showManual by remember { mutableStateOf(false) }
     var manualIp by remember { mutableStateOf("") }
+    var forgetTarget by remember { mutableStateOf<TvDevice?>(null) }
 
     val connecting = connection.phase == ConnectionPhase.CONNECTING
 
@@ -71,23 +75,6 @@ fun ConnectScreen(vm: TvViewModel) {
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 28.dp, bottom = 32.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        item {
-            Column {
-                Text(
-                    "电视助手",
-                    style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onBackground,
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "遥控 · 应用管理 · APK 安装",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-
         item {
             TvCard {
                 Column {
@@ -217,6 +204,7 @@ fun ConnectScreen(vm: TvViewModel) {
                     subtitle = "${dev.host} · RC ${dev.rcPort} / UDT ${dev.udtPort}",
                     onClick = { vm.connect(dev) },
                     enabled = !connecting,
+                    onLongClick = { forgetTarget = dev },
                 )
             }
         }
@@ -239,6 +227,23 @@ fun ConnectScreen(vm: TvViewModel) {
                 }
             }
         }
+    }
+
+    // 忘记设备确认（长按「最近连接」条目触发）
+    forgetTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { forgetTarget = null },
+            title = { Text("忘记此设备") },
+            text = { Text("将从最近连接中移除「${target.displayName}」（${target.host}），下次使用需重新连接。") },
+            confirmButton = {
+                TextButton(onClick = { forgetTarget = null; vm.forgetDevice(target) }) {
+                    Text("忘记", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { forgetTarget = null }) { Text("取消") }
+            },
+        )
     }
 
     if (showManual) {
@@ -279,18 +284,24 @@ fun ConnectScreen(vm: TvViewModel) {
     }
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun DeviceRow(
     title: String,
     subtitle: String,
     onClick: () -> Unit,
     enabled: Boolean = true,
+    onLongClick: (() -> Unit)? = null,
 ) {
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
-            .clickable(enabled = enabled) { onClick() },
+            .combinedClickable(
+                enabled = enabled,
+                onClick = onClick,
+                onLongClick = onLongClick,
+            ),
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surface,
         tonalElevation = 1.dp,

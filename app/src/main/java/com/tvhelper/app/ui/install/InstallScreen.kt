@@ -6,6 +6,7 @@ import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -115,6 +116,16 @@ fun InstallScreen(vm: TvViewModel) {
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(14.dp))
                             .background(MaterialTheme.colorScheme.surfaceVariant)
+                            // 整块可点：最大区域不该是死的
+                            .clickable(enabled = !busy) {
+                                picker.launch(
+                                    arrayOf(
+                                        "application/vnd.android.package-archive",
+                                        "application/octet-stream",
+                                        "*/*",
+                                    )
+                                )
+                            }
                             .padding(14.dp),
                     ) {
                         Column {
@@ -222,11 +233,14 @@ private fun InstallProgressCard(state: InstallState) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.height(6.dp))
-                Text(
-                    state.url,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                if (com.tvhelper.app.BuildConfig.DEBUG) {
+                    // 推送 URL 属调试信息，release 不展示
+                    Text(
+                        state.url,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
 

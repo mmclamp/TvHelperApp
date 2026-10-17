@@ -144,6 +144,10 @@ class TvRepository(
         scope.launch { settings.setAccentColor(color) }
     }
 
+    fun forgetDevice(id: String) {
+        scope.launch { settings.forgetDevice(id) }
+    }
+
     fun setThemeMode(mode: SettingsStore.ThemeMode) {
         scope.launch { settings.setThemeMode(mode) }
     }

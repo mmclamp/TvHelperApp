@@ -163,7 +163,7 @@ private fun AppContent(vm: TvViewModel) {
                     onGoConnect = { tab = Tab.CONNECT },
                     onGoInstall = { tab = Tab.INSTALL },
                 )
-                Tab.REMOTE -> RemoteScreen(vm = vm)
+                Tab.REMOTE -> RemoteScreen(vm = vm, onGoConnect = { tab = Tab.CONNECT })
                 Tab.INSTALL -> InstallScreen(vm = vm)
                 Tab.CONNECT -> ConnectScreen(vm = vm)
                 Tab.SETTINGS -> SettingsScreen(vm = vm)

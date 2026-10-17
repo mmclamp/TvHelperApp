@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -35,9 +36,15 @@ import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -76,8 +83,9 @@ import com.tvhelper.app.vm.TvViewModel
 private const val VIRTUAL_W = 1920f
 private const val VIRTUAL_H = 1080f
 
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
-fun RemoteScreen(vm: TvViewModel) {
+fun RemoteScreen(vm: TvViewModel, onGoConnect: () -> Unit = {}) {
     val connection by vm.connection.collectAsState()
     val tvVolume by vm.tvVolume.collectAsState()
     val tvVolumeMax by vm.tvVolumeMax.collectAsState()
@@ -94,10 +102,31 @@ fun RemoteScreen(vm: TvViewModel) {
     ) {
         item { RemoteHeader(connection) }
 
+        // 未连接：整页控件禁用前先给出路（Material 空状态行动指引）
+        if (!connected) {
+            item {
+                Button(
+                    onClick = onGoConnect,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp),
+                ) { Text("去连接电视") }
+            }
+        }
+
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                PillButton("按键", onClick = { trackpadMode = false }, selected = !trackpadMode)
-                PillButton("触控板", onClick = { trackpadMode = true }, selected = trackpadMode)
+            // 单选切换用平台组件：语义与无障碍优于手搓胶囊
+            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                SegmentedButton(
+                    selected = !trackpadMode,
+                    onClick = { trackpadMode = false },
+                    shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
+                ) { Text("按键") }
+                SegmentedButton(
+                    selected = trackpadMode,
+                    onClick = { trackpadMode = true },
+                    shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
+                ) { Text("触控板") }
             }
         }
 
@@ -116,6 +145,47 @@ fun RemoteScreen(vm: TvViewModel) {
                 }
             }
         } else {
+            // 卡片顺序按使用频率：音量（最高频）→ 方向键 → 功能键 → 播放控制
+            item {
+                TvCard {
+                    Column {
+                        SectionTitle("音量")
+                        if (tvVolume != null) {
+                            Spacer(Modifier.height(2.dp))
+                            Text(
+                                "当前 $tvVolume / 最大 $tvVolumeMax",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            VolumeButton(
+                                label = if (tvVolume != null) "− ($tvVolume)" else "音量 −",
+                                enabled = connected,
+                                modifier = Modifier.weight(1f),
+                                onPress = { vm.adjustVolume(up = false) },
+                            )
+                            VolumeButton(
+                                label = if (tvVolume != null) "＋ ($tvVolume)" else "音量 ＋",
+                                enabled = connected,
+                                modifier = Modifier.weight(1f),
+                                onPress = { vm.adjustVolume(up = true) },
+                            )
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        MuteToggle(
+                            muted = tvMuted,
+                            enabled = connected,
+                            onToggle = { vm.toggleMute() },
+                        )
+                    }
+                }
+            }
+
             item {
                 TvCard {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -169,46 +239,6 @@ fun RemoteScreen(vm: TvViewModel) {
             item {
                 TvCard {
                     Column {
-                        SectionTitle("音量")
-                        if (tvVolume != null) {
-                            Spacer(Modifier.height(2.dp))
-                            Text(
-                                "当前 $tvVolume / 最大 $tvVolumeMax",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Spacer(Modifier.height(6.dp))
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        ) {
-                            VolumeButton(
-                                label = if (tvVolume != null) "− ($tvVolume)" else "音量 −",
-                                enabled = connected,
-                                modifier = Modifier.weight(1f),
-                                onPress = { vm.adjustVolume(up = false) },
-                            )
-                            VolumeButton(
-                                label = if (tvVolume != null) "＋ ($tvVolume)" else "音量 ＋",
-                                enabled = connected,
-                                modifier = Modifier.weight(1f),
-                                onPress = { vm.adjustVolume(up = true) },
-                            )
-                        }
-                        Spacer(Modifier.height(10.dp))
-                        MuteToggle(
-                            muted = tvMuted,
-                            enabled = connected,
-                            onToggle = { vm.toggleMute() },
-                        )
-                    }
-                }
-            }
-
-            item {
-                TvCard {
-                    Column {
                         SectionTitle("播放控制")
                         Spacer(Modifier.height(6.dp))
                         Row(
@@ -234,19 +264,7 @@ fun RemoteScreen(vm: TvViewModel) {
                                 borderColor = MaterialTheme.colorScheme.outline,
                             ) { Text("下一集", style = MaterialTheme.typography.labelSmall) }
                         }
-                    }
-                }
-            }
-
-            item {
-                TvCard {
-                    Column {
-                        SectionTitle("其他")
-                        Spacer(Modifier.height(6.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            PillButton("上一曲", onClick = { vm.sendKey(TvKey.MEDIA_PREVIOUS) }, enabled = connected)
-                            PillButton("下一曲", onClick = { vm.sendKey(TvKey.MEDIA_NEXT) }, enabled = connected)
-                        }
+                        // 原「其他」卡并入：同一语义的上一曲/下一曲已由上方按键覆盖，只留增量键
                         Spacer(Modifier.height(8.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             PillButton("快退", onClick = { vm.sendKey(TvKey.MEDIA_REWIND) }, enabled = connected)
@@ -279,7 +297,7 @@ private fun RemoteHeader(connection: ConnectionState) {
                 modifier = Modifier.weight(1f),
             )
             Text(
-                if (connection.isConnected) "RC 30612" else "离线",
+                if (connection.isConnected) "已连接" else "离线",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -467,8 +485,11 @@ private data class Quadruple(val first: String, val second: Color, val third: Co
 
 @Composable
 private fun PowerButton(vm: TvViewModel, enabled: Boolean) {
+    // 电源是高代价操作（可能直接关电视）：按下抬起后弹确认框，防误触
+    var confirmPower by remember { mutableStateOf(false) }
     RoundButton(
-        onPress = { vm.sendKey(TvKey.POWER) },
+        onPress = {},
+        onRelease = { confirmPower = true },
         enabled = enabled,
         size = 62,
         container = TvColors.danger.copy(alpha = 0.16f),
@@ -476,6 +497,19 @@ private fun PowerButton(vm: TvViewModel, enabled: Boolean) {
         borderColor = TvColors.danger.copy(alpha = 0.4f),
     ) {
         PowerIcon(tint = TvColors.danger, modifier = Modifier.size(26.dp))
+    }
+    if (confirmPower) {
+        AlertDialog(
+            onDismissRequest = { confirmPower = false },
+            title = { Text("发送电源键") },
+            text = { Text("将向电视发送电源键，电视可能关机或熄屏。") },
+            confirmButton = {
+                TextButton(onClick = { confirmPower = false; vm.sendKey(TvKey.POWER) }) { Text("发送") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmPower = false }) { Text("取消") }
+            },
+        )
     }
 }
 

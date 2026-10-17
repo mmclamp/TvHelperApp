@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -215,6 +216,7 @@ fun PillButton(
     val scale by animateFloatAsState(if (pressed) 0.94f else 1f, label = "pillScale")
     Box(
         modifier = modifier
+            .heightIn(min = 48.dp)  // Material 最低触控目标，一处修复全 App 胶囊按钮
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale

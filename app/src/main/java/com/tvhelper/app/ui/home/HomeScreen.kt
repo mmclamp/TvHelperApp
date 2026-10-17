@@ -30,9 +30,10 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -42,6 +43,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -86,6 +88,7 @@ fun HomeScreen(vm: TvViewModel, onGoConnect: () -> Unit, onGoInstall: () -> Unit
     var query by remember { mutableStateOf("") }
     var actionTarget by remember { mutableStateOf<PinnedApp?>(null) }
     var appActionTarget by remember { mutableStateOf<RemoteApp?>(null) }
+    var uninstallTarget by remember { mutableStateOf<RemoteApp?>(null) }
 
     val filtered = remember(apps, query) {
         if (query.isBlank()) apps
@@ -249,10 +252,28 @@ fun HomeScreen(vm: TvViewModel, onGoConnect: () -> Unit, onGoInstall: () -> Unit
                     Icons.Default.Delete, "卸载",
                     tint = MaterialTheme.colorScheme.error,
                 ) {
-                    vm.uninstallApp(target)
+                    // 不直接执行：先弹确认框（破坏性操作）
+                    uninstallTarget = target
                 },
             ),
             afterAction = { appActionTarget = null },
+        )
+    }
+
+    // 卸载二次确认
+    uninstallTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { uninstallTarget = null },
+            title = { Text("卸载应用") },
+            text = { Text("确定要在电视上卸载「${target.displayName}」吗？应用数据将一并清除。") },
+            confirmButton = {
+                TextButton(onClick = { uninstallTarget = null; vm.uninstallApp(target) }) {
+                    Text("卸载", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { uninstallTarget = null }) { Text("取消") }
+            },
         )
     }
 }
@@ -344,6 +365,14 @@ private fun DeviceStatusCard(
     // 连接状态渐变英雄卡：连接中用品牌蓝渐变，未连接用柔和表面色
     val connected = connection.isConnected
     val connecting = connection.phase == ConnectionPhase.CONNECTING
+    // 心跳相对时间每 5s 强制重组一次，避免「刚刚」停留过久
+    var tick by remember { mutableStateOf(0) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(5_000)
+            tick++
+        }
+    }
     val shape = RoundedCornerShape(20.dp)
     Box(
         modifier = Modifier
@@ -424,17 +453,19 @@ private fun DeviceStatusCard(
                     HeroChip("遥控", connection.rcConnected)
                     HeroChip("应用", connection.udtConnected)
                     HeroChip("加密", connection.encrypted)
-                    connection.lastHeartbeatAt.takeIf { it > 0 }?.let {
-                        HeroChip("心跳", true, value = formatTime(it))
-                    }
+                connection.lastHeartbeatAt.takeIf { it > 0 }?.let {
+                    HeroChip("心跳", true, value = remember(tick) { formatTime(it) })
                 }
-                connection.tvProtocolVersion?.let {
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        "协议版本 0x${Integer.toHexString(it)}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color.White.copy(alpha = 0.75f),
-                    )
+                }
+                if (com.tvhelper.app.BuildConfig.DEBUG) {
+                    connection.tvProtocolVersion?.let {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "协议版本 0x${Integer.toHexString(it)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.White.copy(alpha = 0.75f),
+                        )
+                    }
                 }
                 Spacer(Modifier.height(14.dp))
                 // 底部操作行：等宽半透明按钮
@@ -495,7 +526,7 @@ private fun HeroActionButton(
         border = BorderStroke(1.dp, Color.White.copy(alpha = 0.35f)),
     ) {
         Row(
-            Modifier.padding(vertical = 11.dp),
+            Modifier.padding(vertical = 14.dp),
             horizontalArrangement = Arrangement.Center,
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -639,25 +670,44 @@ private fun PinnedGrid(
                         color = MaterialTheme.colorScheme.surface,
                         tonalElevation = 1.dp,
                     ) {
-                        Column(
-                            Modifier.padding(8.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center,
-                        ) {
-                            AppIconBox(
-                                iconBytes = icons[app.packageName],
-                                initial = app.displayName.take(1),
-                                size = 40,
-                            )
-                            Spacer(Modifier.height(6.dp))
-                            Text(
-                                app.displayName,
-                                style = MaterialTheme.typography.labelSmall,
-                                textAlign = TextAlign.Center,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis,
-                                color = MaterialTheme.colorScheme.onSurface,
-                            )
+                        Box {
+                            Column(
+                                Modifier
+                                    .padding(8.dp)
+                                    .fillMaxWidth(),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center,
+                            ) {
+                                AppIconBox(
+                                    iconBytes = icons[app.packageName],
+                                    initial = app.displayName.take(1),
+                                    size = 40,
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    app.displayName,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    textAlign = TextAlign.Center,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                )
+                            }
+                            // 长按的可见替代入口：右上角 ⋮（触控区补足 48dp）
+                            Box(
+                                Modifier
+                                    .align(Alignment.TopEnd)
+                                    .minimumInteractiveComponentSize()
+                                    .clickable(onClick = { onLongPress(app) }),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(
+                                    Icons.Default.MoreVert,
+                                    contentDescription = "更多操作",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
+                                    modifier = Modifier.size(18.dp),
+                                )
+                            }
                         }
                     }
                 }

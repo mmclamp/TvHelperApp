@@ -194,6 +194,10 @@ class TvViewModel(
         viewModelScope.launch { repo.setAccentColor(color) }
     }
 
+    fun forgetDevice(device: com.tvhelper.app.data.TvDevice) {
+        repo.forgetDevice(device.id)
+    }
+
     // ---------------- 应用图标
 
     fun ensureIcon(pkg: String) {

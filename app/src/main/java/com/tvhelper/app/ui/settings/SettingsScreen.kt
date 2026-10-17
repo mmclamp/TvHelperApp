@@ -126,12 +126,12 @@ private fun AccentPicker(
     selected: SettingsStore.AccentColor,
     onSelect: (SettingsStore.AccentColor) -> Unit,
 ) {
-    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         SettingsStore.AccentColor.entries.forEach { c ->
             val isSel = selected == c
             Box(
                 modifier = Modifier
-                    .size(36.dp)
+                    .size(44.dp)
                     .clip(CircleShape)
                     .background(Color(c.dark))
                     .border(
@@ -165,6 +165,7 @@ private fun BatteryWhitelistCard() {
     Row(
         Modifier
             .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))  // 波纹裁剪到卡片圆角内
             .clickable(enabled = !ignoring) {
                 runCatching {
                     context.startActivity(

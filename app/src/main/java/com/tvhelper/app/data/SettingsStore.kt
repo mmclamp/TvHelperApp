@@ -140,6 +140,19 @@ class SettingsStore(private val context: Context) {
         }
     }
 
+    /** 忘记单台设备：从最近连接移除；若是最后连接设备则同步清掉 last_device */
+    suspend fun forgetDevice(id: String) {
+        context.dataStore.edit { prefs ->
+            val lastRaw = prefs[KEY_LAST_DEVICE]
+            val lastId = lastRaw?.let { runCatching { JSONObject(it).optString("id") }.getOrNull() }
+            if (lastId == id) prefs.remove(KEY_LAST_DEVICE)
+            val known = decodeDevices(prefs[KEY_KNOWN_DEVICES]).filterNot { d -> d.id == id }
+            val arr = JSONArray()
+            known.forEach { arr.put(encodeDevice(it)) }
+            prefs[KEY_KNOWN_DEVICES] = arr.toString()
+        }
+    }
+
     // ------------------------------------------------------------ codec
 
     private fun encodeDevice(d: TvDevice) = JSONObject().apply {
