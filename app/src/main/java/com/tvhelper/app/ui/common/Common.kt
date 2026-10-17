@@ -6,7 +6,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.indication
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,10 +25,12 @@ import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -38,6 +42,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.tvhelper.app.ui.theme.TvColors
+import kotlinx.coroutines.launch
 
 /** 统一卡片容器 */
 @Composable
@@ -135,6 +140,7 @@ fun RoundButton(
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val haptic = LocalHapticFeedback.current
+    val scope = rememberCoroutineScope()
     val bg by animateColorAsState(
         targetValue = when {
             !enabled -> container.copy(alpha = 0.4f)
@@ -160,13 +166,18 @@ fun RoundButton(
             .then(
                 if (borderColor != null) Modifier.border(1.dp, borderColor, CircleShape) else Modifier
             )
+            // 触摸波纹：跟随手指落点，在圆形边界内扩散
+            .indication(interaction, ripple(bounded = true))
             .pointerInput(enabled) {
                 if (!enabled) return@pointerInput
                 detectTapGestures(
                     onPress = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        val press = PressInteraction.Press(it)
+                        scope.launch { interaction.emit(press) }
                         onPress()
                         tryAwaitRelease()
+                        scope.launch { interaction.emit(PressInteraction.Release(press)) }
                         onRelease()
                     }
                 )
@@ -212,7 +223,7 @@ fun PillButton(
             .background(bg)
             .clickable(
                 interactionSource = interaction,
-                indication = null,
+                indication = ripple(bounded = true),
                 enabled = enabled,
             ) { onClick() }
             .padding(horizontal = 16.dp, vertical = 9.dp),

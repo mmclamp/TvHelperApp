@@ -138,6 +138,12 @@ class TvRepository(
 
     val themeMode: Flow<SettingsStore.ThemeMode> = settings.themeMode
 
+    val accentColor: Flow<SettingsStore.AccentColor> = settings.accentColor
+
+    fun setAccentColor(color: SettingsStore.AccentColor) {
+        scope.launch { settings.setAccentColor(color) }
+    }
+
     fun setThemeMode(mode: SettingsStore.ThemeMode) {
         scope.launch { settings.setThemeMode(mode) }
     }

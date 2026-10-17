@@ -26,6 +26,7 @@ class SettingsStore(private val context: Context) {
         private val KEY_KNOWN_DEVICES = stringPreferencesKey("known_devices")
         private val KEY_AUTO_CONNECT = booleanPreferencesKey("auto_connect")
         private val KEY_THEME_MODE = stringPreferencesKey("theme_mode")
+        private val KEY_ACCENT = stringPreferencesKey("accent_color")
     }
 
     /** 主题模式 */
@@ -33,6 +34,16 @@ class SettingsStore(private val context: Context) {
         SYSTEM("跟随系统"),
         LIGHT("浅色"),
         DARK("深色"),
+    }
+
+    /** 强调色：light = 浅色主题主色，dark = 深色主题主色 */
+    enum class AccentColor(val label: String, val light: Long, val dark: Long) {
+        BLUE("品牌蓝", 0xFF1F5FD8, 0xFF3D7EFF),
+        CYAN("青", 0xFF0E7C99, 0xFF35C6E8),
+        GREEN("绿", 0xFF1E7A50, 0xFF30A46C),
+        AMBER("琥珀", 0xFF8A5A00, 0xFFFFB300),
+        RED("红", 0xFFC0322F, 0xFFE5484D),
+        PURPLE("紫", 0xFF6C47C8, 0xFF9B7FE8),
     }
 
     /** 主题模式（默认跟随系统） */
@@ -44,6 +55,17 @@ class SettingsStore(private val context: Context) {
 
     suspend fun setThemeMode(mode: ThemeMode) {
         context.dataStore.edit { it[KEY_THEME_MODE] = mode.name }
+    }
+
+    /** 强调色（默认品牌蓝） */
+    val accentColor: Flow<AccentColor> = context.dataStore.data.map { prefs ->
+        runCatching {
+            AccentColor.valueOf(prefs[KEY_ACCENT] ?: AccentColor.BLUE.name)
+        }.getOrDefault(AccentColor.BLUE)
+    }
+
+    suspend fun setAccentColor(color: AccentColor) {
+        context.dataStore.edit { it[KEY_ACCENT] = color.name }
     }
 
     /** 自动连接上次连接过的电视（默认开） */

@@ -95,8 +95,9 @@ private fun AppRoot() {
         factory = TvViewModel.factory(app.container.repository, context)
     )
 
-    // 深浅色：设置项 > 跟随系统
+    // 深浅色：设置项 > 跟随系统；强调色：设置项，注入主题主色
     val themeMode by vm.themeMode.collectAsState()
+    val accent by vm.accentColor.collectAsState()
     val darkTheme = when (themeMode) {
         SettingsStore.ThemeMode.SYSTEM -> isSystemInDarkTheme()
         SettingsStore.ThemeMode.LIGHT -> false
@@ -113,7 +114,7 @@ private fun AppRoot() {
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    TvHelperTheme(darkTheme = darkTheme) {
+    TvHelperTheme(darkTheme = darkTheme, accent = accent) {
         AppContent(vm)
     }
     PairingDialog(vm)

@@ -7,6 +7,10 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.indication
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -34,11 +38,13 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -58,6 +64,8 @@ import com.tvhelper.app.protocol.rc.RcTouchCodec
 import com.tvhelper.app.protocol.rc.TvKey
 import com.tvhelper.app.ui.common.PillButton
 import com.tvhelper.app.ui.common.RoundButton
+import kotlinx.coroutines.launch
+
 import com.tvhelper.app.ui.common.SectionTitle
 import com.tvhelper.app.ui.common.StatusDot
 import com.tvhelper.app.ui.common.TvCard
@@ -316,6 +324,7 @@ private fun DPad(vm: TvViewModel, enabled: Boolean) {
     }
 }
 
+
 /** 支持长按连发的按键 */
 @Composable
 private fun RepeatKeyButton(
@@ -344,9 +353,11 @@ private fun VolumeButton(
     onPress: () -> Unit,
     onRelease: () -> Unit = {},
 ) {
-    // 整块即点击区域：按压缩放 + 变色 + 触觉反馈，手感明显
+    // 整块即点击区域：按压缩放 + 变色 + 触觉反馈 + 波纹，手感明显
     var pressed by remember { mutableStateOf(false) }
+    val interaction = remember { MutableInteractionSource() }
     val haptic = LocalHapticFeedback.current
+    val scope = rememberCoroutineScope()
     val scale by animateFloatAsState(if (pressed) 0.94f else 1f, label = "volScale")
     val bg by animateColorAsState(
         targetValue = when {
@@ -365,14 +376,18 @@ private fun VolumeButton(
             }
             .clip(RoundedCornerShape(16.dp))
             .background(bg)
+            .indication(interaction, ripple(bounded = true))
             .pointerInput(enabled) {
                 if (!enabled) return@pointerInput
                 detectTapGestures(
                     onPress = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         pressed = true
+                        val press = PressInteraction.Press(it)
+                        scope.launch { interaction.emit(press) }
                         onPress()
                         tryAwaitRelease()
+                        scope.launch { interaction.emit(PressInteraction.Release(press)) }
                         pressed = false
                         onRelease()
                     }
@@ -417,14 +432,26 @@ private fun MuteToggle(
             Color.Transparent,
         )
     }
+    // 按压时底色加深一档，松手回弹；波纹跟随手指落点
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val pressedBg by animateColorAsState(
+        targetValue = if (pressed) container.copy(alpha = (container.alpha + 0.22f).coerceAtMost(1f)) else container,
+        label = "muteBg",
+    )
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .height(46.dp)
             .clip(RoundedCornerShape(14.dp))
-            .background(container)
+            .background(pressedBg)
             .then(if (border != Color.Transparent) Modifier.border(1.5.dp, border, RoundedCornerShape(14.dp)) else Modifier)
-            .clickable(enabled = enabled, onClick = onToggle),
+            .clickable(
+                interactionSource = interaction,
+                indication = ripple(bounded = true),
+                enabled = enabled,
+                onClick = onToggle,
+            ),
         contentAlignment = Alignment.Center,
     ) {
         Text(

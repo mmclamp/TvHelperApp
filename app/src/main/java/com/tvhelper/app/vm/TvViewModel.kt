@@ -61,6 +61,9 @@ class TvViewModel(
     val themeMode: StateFlow<SettingsStore.ThemeMode> =
         repo.themeMode.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsStore.ThemeMode.SYSTEM)
 
+    val accentColor: StateFlow<SettingsStore.AccentColor> =
+        repo.accentColor.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsStore.AccentColor.BLUE)
+
     val knownDevices: StateFlow<List<TvDevice>> =
         repo.knownDevices.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
@@ -185,6 +188,10 @@ class TvViewModel(
 
     fun setThemeMode(mode: SettingsStore.ThemeMode) {
         viewModelScope.launch { repo.setThemeMode(mode) }
+    }
+
+    fun setAccentColor(color: SettingsStore.AccentColor) {
+        viewModelScope.launch { repo.setAccentColor(color) }
     }
 
     // ---------------- 应用图标
