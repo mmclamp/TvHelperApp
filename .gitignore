@@ -17,6 +17,9 @@ local.properties
 keystore/
 keystore.properties
 
+# Internal docs
+.agent/
+
 # Build outputs
 app/build/
 *.apk
