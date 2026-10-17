@@ -2,16 +2,18 @@
 
 一个纯 Kotlin + Jetpack Compose 的 Android 应用，用于在同一局域网内连接小米电视、遥控电视、打开电视上已安装的应用，以及把手机里的 APK 推送到电视安装。
 
-本工程是对「小米电视助手 v2.7.6」的**协议级仿写**：不依赖小米账号、不依赖原版 APK，直接按逆向还原出的私有协议与电视通信。当前版本 **1.6.0**（versionCode 13），已在小米电视真机端到端联调通过。
+本工程是对「小米电视助手 v2.7.6」的**协议级仿写**：不依赖小米账号、不依赖原版 APK，直接按逆向还原出的私有协议与电视通信。当前版本 **1.8.8**（versionCode 34），已在小米电视真机端到端联调通过。
 
 ## 功能一览
 
-- **连接**：mDNS 扫描 + 手动输入 IP，记住上次设备；支持自动连接（启动/回前台直连，不跳连接页）
-- **遥控**：方向键 / OK / 返回 / 主页 / 菜单 / 音量± / 静音 / 电源，支持长按连发（标准 repeat 模式）；触控板（部分固件不开放）
-- **应用管理**：枚举已安装应用（含真实图标懒加载 + 磁盘缓存）、打开、固定到首页宫格、长按弹出底部动作面板（打开/固定/上移/下移/卸载）
+- **连接**：mDNS 扫描 + 手动输入 IP，记住上次设备（长按可忘记）；支持自动连接（启动/回前台直连，不跳连接页）
+- **遥控**：方向键 / OK / 返回 / 主页 / 菜单 / 电源，支持长按连发（标准 repeat 模式）；触控板（部分固件不开放）
+- **音量**：UDT SocialRequest 绝对值设置，单击 ±1 自校准；实时显示「当前值/横杆/最大值」；静音走 RC MUTE 键 + 本地状态（红色态高亮）
+- **应用管理**：枚举已安装应用（含真实图标懒加载 + 磁盘缓存）、打开、固定到首页宫格、长按/⋮ 弹出底部动作面板（打开/固定/上移/下移/卸载，卸载二次确认）
 - **APK 安装**：手机起 HTTP 服务托管 APK，电视端拉取并弹官方确认框
-- **保活**：前台服务常驻通知 + 断线自动重连（退避 2s/5s/10s）+ 回前台自动重连
-- **设置**：深浅色主题切换（跟随系统/浅色/深色）、自动连接开关
+- **保活**：前台服务常驻通知 + 断线自动重连（退避 2s/5s/10s，失败续排直至连上）+ 回前台自动重连 + 电池优化白名单引导
+- **设置**：深浅色主题、强调色（6 色板，动态主题 primary）、自动连接开关；关于页版本号读 BuildConfig
+- **触控体验**：全部按钮触摸波纹（Indication 体系）+ 按压缩放变色；标准 Android 语义（滑出即取消）；触控目标 ≥48dp；自适应图标
 
 ---
 
@@ -27,6 +29,7 @@
 | 枚举已安装 App | UDT / TCP 6093 (data) | `getInstalledPackages`（大返回走 data 连接，分页）；返回 `PkgInfos[].appInfo` 内嵌 JSON |
 | 应用图标 | UDT / TCP 6093 (data) | `getPackageInfo(pkg, filter=3, [31,63])`，PNG 字节走 data 段 |
 | 卸载应用 | UDT / TCP 6093 (ctrl) | `uninstallApp` |
+| 音量查询/设置 | UDT / TCP 9093 (Social, appId 1026) | `getVolume()` / `setVolume(int)`（原版 SocialRequest 同名方法，TV 端反射**不能带 ts 前缀**）；响应 `result` 形如 `{"volum":x,"maxVolum":y}`；同族 `setMute/getMute` 反射不支持，静音走 RC MUTE 键 |
 | 安装本地 APK | UDT + 手机侧 HTTP | 手机起 `ServerSocket` 托管 APK → `installUrlApp(url)` → 电视自行拉取并弹官方确认框 |
 
 ### 为什么不用小米账号
@@ -122,12 +125,12 @@ TvHelperApp/
 │   │   ├── UdtClient.kt             # 6093：双连接、握手、分帧、requestId 匹配、分页拼装、反向 RPC
 │   │   └── TvApi.kt                 # UDT 业务封装（含 getPackageIcon）
 │   ├── apkserver/ApkHttpServer.kt   # 极简 HTTP（GET/HEAD + Range），托管 APK 给电视下载
-│   ├── data/                        # Models / SettingsStore(DataStore) / PairingStore / TvRepository(编排+图标缓存+断线重连)
+│   ├── data/                        # Models / SettingsStore(DataStore：主题+强调色+设备记录) / PairingStore / TvRepository(编排+图标缓存+音量自校准+断线重连)
 │   ├── service/ConnectionService.kt # 前台保活服务（connectedDevice 类型）
 │   ├── di/AppContainer.kt           # 手写单例容器
-│   ├── vm/TvViewModel.kt            # UI 状态编排（长按标准 repeat 连发、自动连接）
+│   ├── vm/TvViewModel.kt            # UI 状态编排（长按标准 repeat 连发、音量单步、自动连接）
 │   └── ui/                          # Compose：theme / common / connect / home / remote / install / settings
-└── app/src/test/java/.../           # 34 个 JVM 协议测试（ProtocolTest/AirkanCryptoTest/UdtPacketTest）
+└── app/src/test/java/.../           # 38 个 JVM 协议测试（ProtocolTest/AirkanCryptoTest/UdtPacketTest）
 ```
 
 架构分层：`UI → ViewModel → Repository → (RcClient / UdtClient / ApkHttpServer / ConnectionService)`。协议层完全无 Android 依赖，能用纯 JVM 单测做字节级校验。
@@ -153,11 +156,12 @@ export JAVA_HOME=$(/usr/libexec/java_home -v 17)
 
 Android 不允许主线程网络 I/O，所有 socket 操作内部显式切 `Dispatchers.IO`（RcClient/UdtClient 的 connect/writeRaw、TvRepository 的 connect/probeAndConnect/installApk、IpProbe 等），调用方无需关心。
 
-并发要点（v1.5.1 踩坑）：
+并发要点（v1.5.1 踩坑，v1.7.5 补强）：
 
-- `TvRepository.connect()` 用 **Mutex 串行化**——init 自动连接与 ON_RESUME 重入会并发建**双套通道**，加锁后谁先连上谁生效，自动场景 `force=false`（已连接直接返回）
+- `TvRepository.connect()` 用 **Mutex 串行化**——init 自动连接与 ON_RESUME 重入会并发建**双套通道**，加锁后谁先连上谁生效，自动场景 `force=false`（已连接或真实建连中直接返回；防重入用独立 `building` 标志，不能复用 UI 的 `CONNECTING` 状态——重连调度也会置它，会把重连自己挡死）
 - 图标加载用 `Semaphore(4)` 限流 + 去重，磁盘缓存 `cacheDir/tvicons`
-- 断线自动重连带 `userDisconnected` 标志，用户主动断开不触发
+- 音量调节用 **volumeMutex 串行化**：setVolume 响应回填在 `NonCancellable` 内（快速点击 cancel 协程也不丢缓存回填），连发循环以缓存真实值自校准防漂移；setVolume 成功即视为解除静音
+- 断线自动重连带 `userDisconnected` 标志，用户主动断开不触发；重连失败续排下一轮退避直至连上，`reconnectAttempts` 建连成功后才清零
 
 ## 六、连接端口
 
@@ -185,6 +189,35 @@ RC 端口**不是固定 30612**：优先取 mDNS `_rc._tcp` SRV 记录的端口�
 4. 日志：`adb logcat -s TvRepository RcClient UdtClient ApkHttpServer ConnectionService`。
 
 ## 九、变更记录
+
+### 1.8.8 (34)
+- 音量指示改「当前值/横杆/最大值」三段式，未获取时仅横杆，与音量按钮垂直居中
+
+### 1.8.7 (33)
+- 静音按钮 Canvas 自绘图标（喇叭+声波 / 喇叭+叉），固定文本；震动改回按下即震（ColorOS 对抬起后触发的震动不可靠）
+
+### 1.8.5 - 1.8.6 (31-32)
+- 音量±/静音改与功能键统一的圆形按钮（静音红色态）；LabeledKey 按钮与标签同 Column 严格对齐
+- 震动改到动作真正触发时（后因 ColorOS 可靠性问题回退为按下即震）
+
+### 1.8.2 - 1.8.4 (28-30)
+- 音量/静音并入功能键卡；强调色色板固定单行 + LazyRow 横向滑动
+
+### 1.8.0 - 1.8.1 (26-27)
+- 全部按钮触摸波纹（Indication 体系：PressInteraction + ripple）+ 按压变色；设置页新增强调色（6 色板，动态主题 primary）
+- UI 评审整改：触控目标 ≥48dp、电源键/卸载二次确认、遥控页未连接 CTA、卡片按频率重排、SegmentedButton、快捷卡 ⋮ 入口、心跳定时刷新、忘记设备、调试信息收纳
+
+### 1.7.9 - 1.7.10 (24-25)
+- 全新自适应图标（蓝渐变 + 白描电视 + 青色播放三角）
+- **修复自动重连失效**：CONNECTING 状态误挡 force=false 重连（改用独立 building 标志）；重连失败续排退避；attempts 成功后清零
+
+### 1.7.5 - 1.7.8 (19-23)
+- **修复音量单击丢步**：响应回填 NonCancellable + volumeMutex 串行化 + 连发自校准；音量改单击 ±1；关于页版本号读 BuildConfig
+- 静音定稿走 RC MUTE 键 + 本地状态跟踪（Social setMute/getMute 电视反射不支持，已移除）；音量按钮按压动画；锁定竖屏
+
+### 1.7.0 - 1.7.4 (14-18)
+- **音量打通**：多轮尝试后定位原版走 UDT SocialRequest（TCP 9093，appId 1026），getVolume/setVolume 不带 ts 前缀
+- 保活补强（WakeLock + 电池优化白名单）；应用列表点击不再直接打开
 
 ### 1.6.0 (13)
 - **修复音量键无效 + 电视输入卡死**：时间戳改 uptimeMillis、填真实 scancode、长按改标准 repeat 模式（旧实现 90ms 全量 DOWN+UP 对洪泛电视输入队列）
@@ -217,8 +250,8 @@ RC 端口**不是固定 30612**：优先取 mDNS `_rc._tcp` SRV 记录的端口�
 
 ## 十、单测
 
-`app/src/test` 共 **34 项** JVM 测试，全部为字节级黄金校验：
+`app/src/test` 共 **38 项** JVM 测试，全部为字节级黄金校验：
 
-- `ProtocolTest`（27）：RC 帧头/心跳/就绪、版本协商、SendKey 逐字节比对与 TLV 顺序、scanCode 映射、长按 repeat 帧序列、触摸帧、UDT 三段长度/ctrl `action` 键/tail 回填/分页解析、端口候选顺序
+- `ProtocolTest`（25）：RC 帧头/心跳/就绪、版本协商、SendKey 逐字节比对与 TLV 顺序、scanCode 映射、长按 repeat 帧序列、触摸帧、UDT 三段长度/ctrl `action` 键/tail 回填/分页解析、Social 音量请求（无 ts 前缀）/响应解析、端口候选顺序
 - `UdtPacketTest`（5）：会话握手帧、UDTPacket 16 字节头、分片 more 标志、控制帧识别
 - `AirkanCryptoTest`（8）：AES 会话加密往返
