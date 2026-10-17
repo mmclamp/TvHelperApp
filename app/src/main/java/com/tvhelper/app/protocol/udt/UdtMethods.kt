@@ -63,14 +63,22 @@ object UdtMethods {
         invokerId: String = "",
         verifyCode: String = "",
         useDataChannelReturn: Boolean = true,
-    ): UdtCodec.MethodCall = UdtCodec.MethodCall(
-        methodName = method,
-        methodCallId = methodCallId,
-        invokerId = invokerId,
-        verifyCode = verifyCode,
-        args = prefixTimestampArgs(args, methodCallId),
-        useDataChannelReturn = useDataChannelReturn,
-    )
+        prefixTs: Boolean = true,
+    ): UdtCodec.MethodCall {
+        val finalArgs = if (prefixTs) {
+            prefixTimestampArgs(args, methodCallId)
+        } else {
+            args ?: emptyList()
+        }
+        return UdtCodec.MethodCall(
+            methodName = method,
+            methodCallId = methodCallId,
+            invokerId = invokerId,
+            verifyCode = verifyCode,
+            args = finalArgs,
+            useDataChannelReturn = useDataChannelReturn,
+        )
+    }
 
     // ------------------------------------------------------------ 便捷构造
 
@@ -132,17 +140,18 @@ object UdtMethods {
         id = id,
     )
 
-    /** 查询电视音量；响应 result 形如 {"volum":x,"maxVolum":y} */
+    /** 查询电视音量；响应 result 形如 {"volum":x,"maxVolum":y}。
+     *  TV 端反射调用无参 getVolume()，**不能带 ts 前缀**（实测带参报 NoSuchMethod） */
     fun getVolume(id: Int): UdtCodec.Request = UdtCodec.Request(
         requestId = UdtCodec.newRequestId(),
-        call = call(GET_VOLUME, null, useDataChannelReturn = true),
+        call = call(GET_VOLUME, null, useDataChannelReturn = true, prefixTs = false),
         id = id,
     )
 
-    /** 设置电视音量（绝对值）；原版 SocialRequest.setVolume(int) 同款 */
+    /** 设置电视音量（绝对值）；原版 SocialRequest.setVolume(int) 同款，单参无 ts 前缀 */
     fun setVolume(volume: Int, id: Int): UdtCodec.Request = UdtCodec.Request(
         requestId = UdtCodec.newRequestId(),
-        call = call(SET_VOLUME, listOf(volume), useDataChannelReturn = true),
+        call = call(SET_VOLUME, listOf(volume), useDataChannelReturn = true, prefixTs = false),
         id = id,
     )
 

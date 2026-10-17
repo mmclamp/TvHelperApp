@@ -66,6 +66,10 @@ class TvRepository(
 
     companion object {
         private const val TAG = "TvRepository"
+
+        /** Social 服务（音量等）：原版 v9.c UDTClient{port=9093, appId=1026} */
+        private const val SOCIAL_PORT = 9093
+        private const val SOCIAL_APP_ID = 1026
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -73,6 +77,10 @@ class TvRepository(
     private var rc: RcClient? = null
     private var udt: UdtClient? = null
     private var api: TvApi? = null
+
+    /** Social 服务通道（端口 9093 / appId 1026）：音量 getVolume/setVolume 专用 */
+    private var socialUdt: UdtClient? = null
+    private var socialApi: TvApi? = null
     private var eventJob: Job? = null
 
     /** 用户主动断开时不做自动重连 */
@@ -332,12 +340,36 @@ class TvRepository(
             )
         }
 
+        // ---- 3) Social 通道（9093，尽力而为）：音量专用（原版 v9.c: appId=1026）
+        if (udtClient != null) {
+            scope.launch {
+                val social = try {
+                    UdtClient(device.host, SOCIAL_PORT, appId = SOCIAL_APP_ID).also { it.connect() }
+                } catch (t: Throwable) {
+                    Log.w(TAG, "Social 9093 连接失败：${t.message}")
+                    return@launch
+                }
+                if (encrypted && existingPairing != null) {
+                    social.setEncryption(
+                        UdtEncryption(
+                            tvAuthPublicKey = existingPairing.tvAuthPublicKey,
+                            ourDeviceId = keyPair.publicKeyMd5,
+                            cbcKey = existingPairing.cbcKey,
+                            cbcIv = existingPairing.cbcIv,
+                        )
+                    )
+                }
+                socialUdt = social
+                socialApi = TvApi(social)
+                Log.i(TAG, "Social 9093 已就绪")
+                queryVolume()
+            }
+        }
+
         settings.setLastDevice(device)
         notice("已连接 ${device.displayName}")
         ConnectionService.start(appContext)
-        // ---- 查询电视当前音量（原版 SocialRequest.getVolume 走 UDT 通道）
-        _tvVolume.value = null
-        queryVolume()
+        // ---- 查询电视当前音量：Social 9093 通道就绪后自动触发（见上方 launch）
         // ---- 连接成功自动刷新应用列表（静默，失败不打扰用户）
         if (udtClient != null) {
             runCatching { refreshInstalledApps(quiet = true) }
@@ -638,9 +670,13 @@ class TvRepository(
         eventJob = null
         runCatching { rc?.shutdown() }
         runCatching { udt?.shutdown() }
+        runCatching { socialUdt?.shutdown() }
         rc = null
         udt = null
         api = null
+        socialUdt = null
+        socialApi = null
+        _tvVolume.value = null
         _installedApps.value = emptyList()
     }
 
@@ -691,7 +727,7 @@ class TvRepository(
      * 返回 false 表示发送/解析失败，调用方应停止连发。
      */
     suspend fun setVolume(volume: Int): Boolean {
-        val a = api ?: return false
+        val a = socialApi ?: api ?: return false
         return try {
             val resp = a.setVolume(volume)
             if (resp != null) {
@@ -709,9 +745,9 @@ class TvRepository(
         }
     }
 
-    /** 查询电视当前音量（UDT getVolume，响应含 volum/maxVolum） */
+    /** 查询电视当前音量（Social 9093 通道 getVolume，响应含 volum/maxVolum） */
     fun queryVolume() {
-        val a = api ?: return
+        val a = socialApi ?: api ?: return
         scope.launch {
             runCatching { a.getVolume() }
                 .onSuccess { resp ->

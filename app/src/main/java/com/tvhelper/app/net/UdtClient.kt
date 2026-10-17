@@ -64,6 +64,8 @@ class UdtClient(
     private val host: String,
     private val port: Int = UdtCodec.PORT,
     private val appVersionCode: Int = 1,
+    /** 本端应用 ID：主服务 6093=1025，Social 服务 9093=1026（原版 v9.c） */
+    private val appId: Int = UdtCodec.UDT_APP_ID,
 ) {
 
     companion object {
@@ -118,7 +120,7 @@ class UdtClient(
             ctrlSocket = c
             ctrlOut = c.getOutputStream()
             // 会话初始化：原版在发送器构造时立即发握手帧，电视据此登记会话
-            ctrlOut!!.write(UdtCodec.handshakePacket(isCtrl = true))
+            ctrlOut!!.write(UdtCodec.handshakePacket(isCtrl = true, srcApp = appId, dstApp = appId))
             ctrlOut!!.flush()
             ctrlReader = scope.launch { readLoop(c.getInputStream(), "ctrl") }
             Log.i(TAG, "ctrl 连接成功 ${host}:$port（握手已发送）")
@@ -131,7 +133,7 @@ class UdtClient(
             val d = openSocket()
             dataSocket = d
             dataOut = d.getOutputStream()
-            dataOut!!.write(UdtCodec.handshakePacket(isCtrl = false))
+            dataOut!!.write(UdtCodec.handshakePacket(isCtrl = false, srcApp = appId, dstApp = appId))
             dataOut!!.flush()
             dataReader = scope.launch { readLoop(d.getInputStream(), "data") }
             Log.i(TAG, "data 连接成功 ${host}:$port（握手已发送）")
@@ -207,7 +209,7 @@ class UdtClient(
             do {
                 val len = minOf(chunkMax, msg.size - off)
                 val more = off + len < msg.size
-                out.write(UdtCodec.udtPacketHeader(UdtCodec.UDT_APP_ID, UdtCodec.UDT_APP_ID, len, more))
+                out.write(UdtCodec.udtPacketHeader(appId, appId, len, more))
                 out.write(msg, off, len)
                 off += len
             } while (off < msg.size)
