@@ -9,6 +9,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import com.tvhelper.app.R
 
 /**
@@ -34,6 +35,8 @@ class ConnectionService : Service() {
             context.stopService(Intent(context, ConnectionService::class.java))
         }
     }
+
+    private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -63,10 +66,25 @@ class ConnectionService : Service() {
                     .build()
             }
         if (Build.VERSION.SDK_INT >= 29) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+            startForeground(
+                NOTIFICATION_ID, notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+            )
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
+        // 部分 ROM（ColorOS 等）会在息屏后冻结进程掐断 socket，
+        // 持锁让 CPU 保持活跃；进程冻结是另一层，需用户加电池优化白名单
+        @Suppress("WakelockTimeout")
+        wakeLock = (getSystemService(POWER_SERVICE) as PowerManager)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "TvHelper:Connection")
+            .also { it.acquire() }
+    }
+
+    override fun onDestroy() {
+        wakeLock?.let { if (it.isHeld) it.release() }
+        wakeLock = null
+        super.onDestroy()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY

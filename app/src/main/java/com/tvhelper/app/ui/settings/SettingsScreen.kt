@@ -1,5 +1,10 @@
 package com.tvhelper.app.ui.settings
 
+import android.content.Intent
+import android.net.Uri
+import android.os.PowerManager
+import android.provider.Settings
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -20,6 +25,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.tvhelper.app.data.SettingsStore
@@ -84,14 +90,59 @@ fun SettingsScreen(vm: TvViewModel) {
             }
         }
 
+        // ---- 后台保活
+        SectionLabel("后台保活")
+        BatteryWhitelistCard()
+
         // ---- 关于
         SectionLabel("关于")
         TvCard {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                SettingRow("版本", "1.4.0")
+                SettingRow("版本", "1.7.0")
                 SettingRow("协议", "AirKan / milink UDT（加密通道）")
                 SettingRow("支持设备", "小米 / 红米 MIUI TV")
             }
+        }
+    }
+}
+
+/** 后台保活：申请忽略电池优化。ColorOS 等会把未加白的应用进程冻结，掐断所有连接 */
+@Composable
+private fun BatteryWhitelistCard() {
+    val context = LocalContext.current
+    val powerManager = context.getSystemService(android.os.PowerManager::class.java)
+    val ignoring = powerManager?.isIgnoringBatteryOptimizations(context.packageName) == true
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(enabled = !ignoring) {
+                runCatching {
+                    context.startActivity(
+                        Intent(
+                            Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                            Uri.parse("package:${context.packageName}"),
+                        )
+                    )
+                }
+            }
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                if (ignoring) "后台保活：已开启" else "申请忽略电池优化",
+                style = MaterialTheme.typography.titleSmall,
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                if (ignoring) {
+                    "已加入电池优化白名单，息屏后连接更稳定"
+                } else {
+                    "点按弹窗选择「允许」，否则息屏后系统会冻结应用断开连接"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
