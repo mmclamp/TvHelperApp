@@ -43,6 +43,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.tvhelper.app.ui.theme.TvColors
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /** 统一卡片容器 */
@@ -124,8 +125,11 @@ fun LabeledValue(
 /**
  * 圆形遥控按键。
  *
- * 按下即回调 [onPress]（用于「按下立刻发一次按键，之后连发」），
- * 抬起回调 [onRelease]（用于停止连发）。
+ * 标准 Android 按钮语义：**手指滑出按钮区域即取消**。
+ * - 短按：抬起时手指仍在区域内才回调 [onPress]，随后回调 [onRelease]（普通按钮无操作）
+ * - 长按（系统长按阈值后）：提前回调 [onPress] 启动连发（方向键场景首键+连发），
+ *   手势结束时回调 [onRelease] 停止连发（含滑出取消的情形）
+ * - 按住后未达长按阈值就滑出：什么都不发，完全取消
  */
 @Composable
 fun RoundButton(
@@ -176,10 +180,24 @@ fun RoundButton(
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         val press = PressInteraction.Press(it)
                         scope.launch { interaction.emit(press) }
-                        onPress()
-                        tryAwaitRelease()
+                        // 长按定时器：到系统长按阈值仍未松手则启动连发（onPress=发首键+连发）
+                        var longPressStarted = false
+                        val repeatJob = scope.launch {
+                            delay(viewConfiguration.longPressTimeoutMillis)
+                            longPressStarted = true
+                            onPress()
+                        }
+                        // tryAwaitRelease：区内正常抬起返回 true；手指滑出/手势被取消返回 false
+                        val released = tryAwaitRelease()
+                        repeatJob.cancel()
                         scope.launch { interaction.emit(PressInteraction.Release(press)) }
-                        onRelease()
+                        when {
+                            // 连发已启动：停连发（区内抬起和滑出都要停）
+                            longPressStarted -> onRelease()
+                            // 短按且在区域内：响应一次；对连发按钮=发一键立即停
+                            released -> { onPress(); onRelease() }
+                            // else：滑出取消，不响应
+                        }
                     }
                 )
             },

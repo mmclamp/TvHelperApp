@@ -396,10 +396,11 @@ private fun VolumeButton(
                         pressed = true
                         val press = PressInteraction.Press(it)
                         scope.launch { interaction.emit(press) }
-                        onPress()
-                        tryAwaitRelease()
+                        // 标准 Android 按钮语义：抬起时手指仍在区域内才响应，滑出即取消
+                        val released = tryAwaitRelease()
                         scope.launch { interaction.emit(PressInteraction.Release(press)) }
                         pressed = false
+                        if (released) onPress()
                         onRelease()
                     }
                 )
