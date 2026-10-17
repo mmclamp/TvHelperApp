@@ -34,6 +34,10 @@ object UdtMethods {
     const val LONG_PRESS_POWER = "longPressPower"
     const val REMOVE_APP_INSTALL_PROGRESS = "removeAppInstallProgress"
 
+    /** 音量：原版 com.xiaomi.mitv.phone.tvassistant.udt.SocialRequest 接口同款方法名 */
+    const val GET_VOLUME = "getVolume"
+    const val SET_VOLUME = "setVolume"
+
     /** 电视端定义的应用安装状态 */
     const val APP_STATUS_UNINSTALL = 0
     const val APP_STATUS_INSTALLED = 1
@@ -125,6 +129,20 @@ object UdtMethods {
     fun fireAndForget(method: String, id: Int): UdtCodec.Request = UdtCodec.Request(
         requestId = UdtCodec.newRequestId(),
         call = call(method, null, useDataChannelReturn = true),
+        id = id,
+    )
+
+    /** 查询电视音量；响应 result 形如 {"volum":x,"maxVolum":y} */
+    fun getVolume(id: Int): UdtCodec.Request = UdtCodec.Request(
+        requestId = UdtCodec.newRequestId(),
+        call = call(GET_VOLUME, null, useDataChannelReturn = true),
+        id = id,
+    )
+
+    /** 设置电视音量（绝对值）；原版 SocialRequest.setVolume(int) 同款 */
+    fun setVolume(volume: Int, id: Int): UdtCodec.Request = UdtCodec.Request(
+        requestId = UdtCodec.newRequestId(),
+        call = call(SET_VOLUME, listOf(volume), useDataChannelReturn = true),
         id = id,
     )
 

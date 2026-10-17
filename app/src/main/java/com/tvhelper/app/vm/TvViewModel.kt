@@ -48,6 +48,7 @@ class TvViewModel(
     val pairingState: StateFlow<PairingState> = repo.pairing
     val appIcons: StateFlow<Map<String, ByteArray>> = repo.appIcons
     val tvVolume: StateFlow<Int?> = repo.tvVolume
+    val tvVolumeMax: StateFlow<Int> = repo.tvVolumeMax
 
     val pinnedApps: StateFlow<List<PinnedApp>> =
         repo.pinnedApps.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -252,18 +253,19 @@ class TvViewModel(
     private var volumeJob: Job? = null
 
     /**
-     * 音量连发：**不走按键帧**（原版逆向确认：按键方式的音量会被电视忽略甚至楔死输入系统），
-     * 改用播放控制通道的 setVolume（subType 14）直接设绝对值：按下一次 ±1，
-     * 长按每 180ms ±1；发送失败立即停。本地乐观回填，电视查询响应到达后自动修正。
+     * 音量连发：原版 SocialRequest.setVolume 走 UDT 通道直接设绝对值（逆向确认，
+     * RC 按键/播放控制帧电视都不理）。按下一次 ±1，长按每 200ms ±1；
+     * 发送失败立即停。电视响应到达后回填真实值。
      */
     fun startVolumeRepeat(up: Boolean) {
         stopVolumeRepeat()
         volumeJob = viewModelScope.launch {
-            var v = repo.tvVolume.value ?: 25
+            val max = repo.tvVolumeMax.value
+            var v = repo.tvVolume.value ?: (max / 2)
             while (isActive) {
-                v = if (up) minOf(v + 1, 100) else maxOf(v - 1, 0)
+                v = if (up) minOf(v + 1, max) else maxOf(v - 1, 0)
                 if (!repo.setVolume(v)) break
-                delay(180)
+                delay(200)
             }
         }
     }

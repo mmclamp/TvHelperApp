@@ -32,6 +32,9 @@ object RcPlayControlCodec {
     const val SUB_RESUME = 4
     const val SUB_SEEK = 5
     const val SUB_QUERY = 7
+
+    /** 查询结果响应（原版 l.p 解析表：7=查询请求，8=查询结果） */
+    const val SUB_QUERY_RESULT = 8
     const val SUB_RESOLUTION = 12
     const val SUB_SOURCE = 13
     const val SUB_SET_VOLUME = 14

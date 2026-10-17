@@ -63,6 +63,7 @@ private const val VIRTUAL_H = 1080f
 fun RemoteScreen(vm: TvViewModel) {
     val connection by vm.connection.collectAsState()
     val tvVolume by vm.tvVolume.collectAsState()
+    val tvVolumeMax by vm.tvVolumeMax.collectAsState()
     val connected = connection.isConnected
     var trackpadMode by remember { mutableStateOf(false) }
 
@@ -151,20 +152,28 @@ fun RemoteScreen(vm: TvViewModel) {
                 TvCard {
                     Column {
                         SectionTitle("音量")
+                        if (tvVolume != null) {
+                            Spacer(Modifier.height(2.dp))
+                            Text(
+                                "当前 $tvVolume / 最大 $tvVolumeMax",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                         Spacer(Modifier.height(6.dp))
                         Row(
                             Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
                             VolumeButton(
-                                label = if (tvVolume != null) "音量 − ($tvVolume)" else "音量 −",
+                                label = if (tvVolume != null) "− ($tvVolume)" else "音量 −",
                                 enabled = connected,
                                 modifier = Modifier.weight(1f),
                                 onPress = { vm.startVolumeRepeat(up = false) },
                                 onRelease = { vm.stopVolumeRepeat() },
                             )
                             VolumeButton(
-                                label = if (tvVolume != null) "音量 ＋ ($tvVolume)" else "音量 ＋",
+                                label = if (tvVolume != null) "＋ ($tvVolume)" else "音量 ＋",
                                 enabled = connected,
                                 modifier = Modifier.weight(1f),
                                 onPress = { vm.startVolumeRepeat(up = true) },

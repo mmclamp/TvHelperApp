@@ -100,6 +100,10 @@ class TvRepository(
     private val _tvVolume = MutableStateFlow<Int?>(null)
     val tvVolume: StateFlow<Int?> = _tvVolume
 
+    /** 电视端音量最大值（部分机型 50，默认 100） */
+    private val _tvVolumeMax = MutableStateFlow(100)
+    val tvVolumeMax: StateFlow<Int> = _tvVolumeMax
+
     private val _notices = MutableSharedFlow<Notice>(extraBufferCapacity = 32)
     val notices: SharedFlow<Notice> = _notices
 
@@ -254,7 +258,8 @@ class TvRepository(
                                     "data=${parsed?.second?.joinToString(" ") { "%02x".format(it) }}",
                             )
                             parsed?.let { (sub, data) ->
-                                if (sub == RcPlayControlCodec.SUB_QUERY) {
+                                // 原版 l.p：子类型 8 = query result（7 是查询请求）
+                                if (sub == RcPlayControlCodec.SUB_QUERY_RESULT) {
                                     RcPlayControlCodec.extractVolume(data)?.let { _tvVolume.value = it }
                                 }
                             }
@@ -330,10 +335,9 @@ class TvRepository(
         settings.setLastDevice(device)
         notice("已连接 ${device.displayName}")
         ConnectionService.start(appContext)
-        // ---- 查询电视当前音量（原版协议：播放控制 subType 7，音量项码 12）
+        // ---- 查询电视当前音量（原版 SocialRequest.getVolume 走 UDT 通道）
         _tvVolume.value = null
-        runCatching { rcClient.sendPlayControl(RcPlayControlCodec.frameQueryVolume()) }
-            .onFailure { Log.w(TAG, "音量查询发送失败：${it.message}") }
+        queryVolume()
         // ---- 连接成功自动刷新应用列表（静默，失败不打扰用户）
         if (udtClient != null) {
             runCatching { refreshInstalledApps(quiet = true) }
@@ -682,28 +686,43 @@ class TvRepository(
     }
 
     /**
-     * 设置电视音量（绝对值 0-100）。对齐原版：RC type 3 subType 14 + 单字节数值，
-     * 电视端自行钳位。乐观回填本地状态，查询响应到达时会被修正。
-     * 返回 false 表示发送失败（连接断开等），调用方应停止连发。
+     * 设置电视音量（绝对值）。原版 SocialRequest.setVolume 走 UDT 通道
+     * （逆向确认：遥控场景音量不走 RC 按键/播放控制帧，HTTP 旧接口仅限旧机型）。
+     * 返回 false 表示发送/解析失败，调用方应停止连发。
      */
     suspend fun setVolume(volume: Int): Boolean {
-        val client = rc ?: return false
-        val v = volume.coerceIn(0, 100)
+        val a = api ?: return false
         return try {
-            client.sendPlayControl(RcPlayControlCodec.frameSetVolume(v))
-            _tvVolume.value = v
-            true
+            val resp = a.setVolume(volume)
+            if (resp != null) {
+                _tvVolume.value = resp.first
+                _tvVolumeMax.value = resp.second
+                true
+            } else {
+                // 无响应体但请求成功时乐观回填
+                _tvVolume.value = volume.coerceIn(0, _tvVolumeMax.value)
+                true
+            }
         } catch (t: Throwable) {
             Log.w(TAG, "音量设置失败：${t.message}")
             false
         }
     }
 
-    /** 查询电视当前音量 */
+    /** 查询电视当前音量（UDT getVolume，响应含 volum/maxVolum） */
     fun queryVolume() {
-        val client = rc ?: return
+        val a = api ?: return
         scope.launch {
-            runCatching { client.sendPlayControl(RcPlayControlCodec.frameQueryVolume()) }
+            runCatching { a.getVolume() }
+                .onSuccess { resp ->
+                    if (resp != null) {
+                        _tvVolume.value = resp.first
+                        _tvVolumeMax.value = resp.second
+                        Log.i(TAG, "电视音量：${resp.first}/${resp.second}")
+                    } else {
+                        Log.w(TAG, "音量查询无结果（方法可能不受支持）")
+                    }
+                }
                 .onFailure { Log.w(TAG, "音量查询失败：${it.message}") }
         }
     }

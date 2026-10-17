@@ -66,6 +66,35 @@ class TvApi(private val udt: UdtClient) {
         return msg.result
     }
 
+    /**
+     * 查询电视音量（UDT SocialRequest.getVolume）。
+     * 返回 (当前值, 最大值)；解析失败返回 null。
+     */
+    suspend fun getVolume(): Pair<Int, Int>? = volumeFrom(
+        udt.call(UdtMethods.getVolume(nextId()), UdtMethods.TIMEOUT_DEFAULT),
+    )
+
+    /** 设置电视音量（绝对值）。返回 (生效值, 最大值)，失败 null */
+    suspend fun setVolume(volume: Int): Pair<Int, Int>? = volumeFrom(
+        udt.call(UdtMethods.setVolume(volume, nextId()), UdtMethods.TIMEOUT_DEFAULT),
+    )
+
+    private fun volumeFrom(msg: UdtCodec.Message): Pair<Int, Int>? {
+        val ok = msg.status
+        val r = msg.result
+        Log.d(TAG, "volume resp status=$ok result=$r dataLen=${msg.data.size}")
+        if (r == null) return null
+        // 容错：result 可能是 {"volum":x,"maxVolum":y}，也可能是裸数值或文本
+        val v: Int = when {
+            r.has("volum") -> r.optInt("volum", -1)
+            r.has("volume") -> r.optInt("volume", -1)
+            else -> r.optInt("value", -1)
+        }
+        if (v < 0) return null
+        val max = r.optInt("maxVolum", r.optInt("maxVolume", 100))
+        return v to max
+    }
+
     private suspend fun fireAndForget(method: String): Int {
         val msg = udt.call(UdtMethods.fireAndForget(method, nextId()), UdtMethods.TIMEOUT_DEFAULT)
         return msg.status ?: -1
