@@ -63,6 +63,23 @@ object RcPlayControlCodec {
     }
 
     /**
+     * 解析播放控制响应。RcEvent.Other 的 payload = 完整 7 字节头 + data：
+     * `[subType 1B][id 4B BE][dataLen 2B BE][data]`。
+     * 返回 (subType, data)；长度不符返回 null。
+     */
+    fun parseResponse(payload: ByteArray): Pair<Int, ByteArray>? {
+        if (payload.size < 7) return null
+        val subType = payload[0].toInt() and 0xFF
+        val dataLen = ((payload[5].toInt() and 0xFF) shl 8) or (payload[6].toInt() and 0xFF)
+        val data = if (dataLen > 0 && payload.size >= 7 + dataLen) {
+            payload.copyOfRange(7, 7 + dataLen)
+        } else {
+            ByteArray(0)
+        }
+        return subType to data
+    }
+
+    /**
      * 从查询响应数据里提取音量。
      * 响应数据是 `[项码 1B][值 1B]` 序列（v1/i.l 构造），项码 12 为音量。
      * 解析容错：长度不齐或码不匹配时跳过。

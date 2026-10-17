@@ -245,9 +245,19 @@ class TvRepository(
                         scheduleReconnect(device, ev.cause)
                     }
                     is RcEvent.Other -> {
-                        // 播放控制响应（type 3）：目前只关心音量查询结果
+                        // 播放控制响应（type 3）：payload = 7 字节头 + data，先拆头再解析
                         if (ev.type == RcCodec.TYPE_PLAY) {
-                            RcPlayControlCodec.extractVolume(ev.payload)?.let { _tvVolume.value = it }
+                            val parsed = RcPlayControlCodec.parseResponse(ev.payload)
+                            Log.i(
+                                TAG,
+                                "← playCtrl subType=${parsed?.first} " +
+                                    "data=${parsed?.second?.joinToString(" ") { "%02x".format(it) }}",
+                            )
+                            parsed?.let { (sub, data) ->
+                                if (sub == RcPlayControlCodec.SUB_QUERY) {
+                                    RcPlayControlCodec.extractVolume(data)?.let { _tvVolume.value = it }
+                                }
+                            }
                         }
                     }
                     else -> Unit

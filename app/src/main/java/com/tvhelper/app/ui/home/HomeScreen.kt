@@ -724,7 +724,8 @@ private fun AppRow(
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
             .combinedClickable(
-                onClick = onOpen,
+                // 点击整行不直接打开（误触率高），弹操作面板；只有「打开」按钮才启动应用
+                onClick = onLongPress,
                 onLongClick = onLongPress,
             ),
         shape = RoundedCornerShape(14.dp),

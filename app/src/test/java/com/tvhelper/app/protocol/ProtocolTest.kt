@@ -504,4 +504,22 @@ class ProtocolTest {
         assertNull(RcPlayControlCodec.extractVolume(byteArrayOf(7, 1, 2, 3)))
         assertNull(RcPlayControlCodec.extractVolume(byteArrayOf(12)))
     }
+
+    @Test
+    fun playControlParseResponseSkipsHeader() {
+        // 完整 payload = 7 字节头 [subType][id 4B][dataLen 2B] + data
+        val payload = byteArrayOf(
+            7,                     // subType = 查询响应
+            0, 0, 0, 5,            // id = 5
+            0, 2,                  // dataLen = 2
+            12, 35,                // data = [项码 12(音量), 值 35]
+        )
+        val (sub, data) = RcPlayControlCodec.parseResponse(payload)!!
+        assertEquals(7, sub)
+        assertEquals(35, RcPlayControlCodec.extractVolume(data))
+        // 长度不足 7 / dataLen 越界时返回 null 或空 data
+        assertNull(RcPlayControlCodec.parseResponse(byteArrayOf(7, 0, 0)))
+        val bad = byteArrayOf(7, 0, 0, 0, 1, 0, 9, 12) // dataLen=9 超出实际
+        assertEquals(7, RcPlayControlCodec.parseResponse(bad)!!.first)
+    }
 }
