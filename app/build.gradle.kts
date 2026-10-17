@@ -12,8 +12,8 @@ android {
         applicationId = "com.tvhelper.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 24
-        versionName = "1.7.9"
+        versionCode = 25
+        versionName = "1.7.10"
         vectorDrawables { useSupportLibrary = true }
     }
 

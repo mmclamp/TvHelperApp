@@ -208,22 +208,33 @@ class TvRepository(
     /** 串行化连接：防止 init 自动连接与 ON_RESUME 重入并发建双套通道 */
     private val connectMutex = Mutex()
 
+    /** 正在真实建连（防重入标志）。不能用 UI 的 phase==CONNECTING 判断：
+     *  自动重连调度时也会把 phase 设为 CONNECTING，会把重连自己挡死。 */
+    @Volatile
+    private var building = false
+
     suspend fun connect(device: TvDevice, force: Boolean = true): Boolean =
         connectMutex.withLock {
             withContext(Dispatchers.IO) {
                 val st = _connection.value
                 if (!force) {
-                    // 非强制（自动重连/自动连接场景）：已连接或正在建连都直接跳过，
+                    // 非强制（自动重连/自动连接场景）：已连接或正在真实建连都直接跳过，
                     // 避免后到者把刚建好的连接 kill 掉（日志里「连接成功 1s 后 Socket closed」的元凶）
-                    if (st.isConnected || st.phase == ConnectionPhase.CONNECTING) return@withContext true
+                    if (st.isConnected || building) return@withContext true
                 }
-                connectInternal(device)
+                building = true
+                try {
+                    val ok = connectInternal(device)
+                    if (ok) reconnectAttempts = 0
+                    ok
+                } finally {
+                    building = false
+                }
             }
         }
 
     private suspend fun connectInternal(device: TvDevice): Boolean = withContext(Dispatchers.IO) {
         userDisconnected = false
-        reconnectAttempts = 0
         reconnectJob?.cancel()
         reconnectJob = null
         disconnectInternal()
@@ -460,8 +471,9 @@ class TvRepository(
             // 先清空引用再连接：connectInternal 会 cancel reconnectJob，
             // 不清空会把自己 cancel 掉（日志「自动重连失败：StandaloneCoroutine was cancelled」）
             reconnectJob = null
-            runCatching { connect(device, force = false) }
-                .onFailure { Log.w(TAG, "自动重连失败：${it.message}") }
+            // 失败不算完：续排下一轮退避，直到连上或用户主动断开（attempts 保留，退避逐级升档）
+            val ok = runCatching { connect(device, force = false) }.getOrDefault(false)
+            if (!ok && !userDisconnected) scheduleReconnect(device)
         }
     }
 
