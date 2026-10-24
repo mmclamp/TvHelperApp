@@ -2,6 +2,7 @@ package com.tvhelper.app
 
 import android.app.Application
 import com.tvhelper.app.di.AppContainer
+import com.tvhelper.app.log.FileLogger
 
 class TvHelperApp : Application() {
 
@@ -11,6 +12,7 @@ class TvHelperApp : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        FileLogger.start(this)
         container = AppContainer(applicationContext)
     }
 

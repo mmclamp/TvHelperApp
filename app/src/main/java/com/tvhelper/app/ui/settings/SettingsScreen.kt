@@ -31,8 +31,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -42,6 +46,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.tvhelper.app.BuildConfig
 import com.tvhelper.app.data.SettingsStore
+import com.tvhelper.app.log.FileLogger
 import com.tvhelper.app.ui.common.TvCard
 import com.tvhelper.app.vm.TvViewModel
 
@@ -117,9 +122,27 @@ fun SettingsScreen(vm: TvViewModel) {
                 SettingRow("版本", BuildConfig.VERSION_NAME)
                 SettingRow("协议", "AirKan / milink UDT（加密通道）")
                 SettingRow("支持设备", "小米 / 红米 MIUI TV")
+                LogRow()
             }
         }
     }
+}
+
+/** 运行日志状态行：显示当前日志文件大小，提示排查入口 */
+@Composable
+private fun LogRow() {
+    val ctx = LocalContext.current
+    var sizeText by remember { mutableStateOf("已开启") }
+    LaunchedEffect(Unit) {
+        val f = FileLogger.currentFile
+        if (f != null && f.exists()) {
+            val kb = f.length() / 1024
+            sizeText = if (kb > 0) "已记录 ${kb}KB" else "已开启"
+        } else {
+            sizeText = "不可用"
+        }
+    }
+    SettingRow("运行日志", sizeText)
 }
 
 /** 强调色色板：圆形色块，选中画勾 + 描边；固定单行，放不下横向滑动 */
