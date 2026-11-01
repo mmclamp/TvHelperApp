@@ -643,27 +643,28 @@ private fun PowerButton(
         }
     }
 
-    // 状态区分：颜色 / 标签 / 行为随电源状态变化
+    // 状态区分：颜色 / 标签 / 行为随可达性变化
+    // 注意：REACHABLE（网络可达）不代表电视亮屏——息屏态网络也通且协议无法区分，故标签用中性"电源"
     val (iconTint, label) = when (powerState) {
-        TvPowerState.ON -> TvColors.danger to "关机"
-        TvPowerState.POWERING_ON -> palette.sub to "开机中…"
-        TvPowerState.OFF -> palette.keyGlyph to "开机"
+        TvPowerState.REACHABLE -> TvColors.danger to "电源"
+        TvPowerState.WAKING -> palette.sub to "开机中…"
+        TvPowerState.UNREACHABLE -> palette.keyGlyph to "开机"
     }
-    val enabled = deviceKnown && powerState != TvPowerState.POWERING_ON
+    val enabled = deviceKnown && powerState != TvPowerState.WAKING
 
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         RoundButton(
             onPress = {},
             onRelease = {
                 when (powerState) {
-                    TvPowerState.ON -> confirmOff = true
-                    TvPowerState.OFF -> tryPowerOn()
-                    TvPowerState.POWERING_ON -> { /* 等待回连，忽略 */ }
+                    TvPowerState.REACHABLE -> confirmOff = true
+                    TvPowerState.UNREACHABLE -> tryPowerOn()
+                    TvPowerState.WAKING -> { /* 等待回连，忽略 */ }
                 }
             },
             enabled = enabled,
             size = 58,
-            container = TvColors.danger.copy(alpha = if (powerState == TvPowerState.ON) 0.16f else 0.10f),
+            container = TvColors.danger.copy(alpha = if (powerState == TvPowerState.REACHABLE) 0.16f else 0.10f),
             contentColor = iconTint,
             borderColor = TvColors.danger.copy(alpha = 0.4f),
             pressColor = TvColors.danger,
@@ -677,8 +678,14 @@ private fun PowerButton(
     if (confirmOff) {
         AlertDialog(
             onDismissRequest = { confirmOff = false },
-            title = { Text("关闭电视") },
-            text = { Text("将向电视发送电源键，电视可能关机或熄屏。") },
+            title = { Text("发送电源键") },
+            text = {
+                Text(
+                    "电视亮屏时：发送后关机/熄屏。\n" +
+                        "电视息屏/待机时：按键会被固件丢弃（不亮屏），需用电视遥控器或实体电源键唤醒。\n" +
+                        "电视已关机时：连接已断开，本按钮不会出现。",
+                )
+            },
             confirmButton = {
                 TextButton(onClick = { confirmOff = false; vm.powerOff() }) { Text("发送") }
             },

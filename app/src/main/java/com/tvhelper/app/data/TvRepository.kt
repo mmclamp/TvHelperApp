@@ -120,8 +120,8 @@ class TvRepository(
     private val _tvMuted = MutableStateFlow<Boolean?>(null)
     val tvMuted: StateFlow<Boolean?> = _tvMuted
 
-    /** 电视电源状态机（状态区分）：亮屏可遥控(ON) / 未连接(OFF) / 正在开机等待回连(POWERING_ON) */
-    private val _tvPowerState = MutableStateFlow(TvPowerState.OFF)
+    /** 电视网络可达性状态（电源键行为依据）：可达(REACHABLE) / 不可达(UNREACHABLE) / 唤醒中(WAKING)。可达≠亮屏，息屏态网络也通 */
+    private val _tvPowerState = MutableStateFlow(TvPowerState.UNREACHABLE)
     val tvPowerState: StateFlow<TvPowerState> = _tvPowerState
 
     /** 最近一次成功连接的设备，作为「开机」指令的目标（息屏/关机后连接已断，据此重连） */
@@ -314,7 +314,7 @@ class TvRepository(
         )
         // 遥控通道就绪即视为电视亮屏、可遥控
         lastConnectDevice = device
-        _tvPowerState.value = TvPowerState.ON
+        _tvPowerState.value = TvPowerState.REACHABLE
 
         // ---- 2) UDT 通道（首连强制重建）
         buildUdt(device, encrypted, existingPairing, rebuild = true)
@@ -496,10 +496,10 @@ class TvRepository(
         val attempt = ++reconnectAttempts
         val backoff = reconnectBackoffMs[minOf(attempt - 1, reconnectBackoffMs.size - 1)]
         Log.i(TAG, "RC 断线 cause=${cause?.javaClass?.simpleName}: ${cause?.message}，${backoff / 1000}s 后自动重连（第 $attempt 次）")
-        // 断线即视为电视可能已关机/息屏：电源状态翻 OFF（开机等待期除外，避免覆盖 POWERING_ON）
+        // 断线即视为网络可能不可达：状态翻 UNREACHABLE（唤醒等待期除外，避免覆盖 WAKING）
         // 修复：此前只在主动 disconnect 时翻 OFF，电视自己关机走断线回调，电源键残留 ON 误发关机键
-        if (_tvPowerState.value != TvPowerState.POWERING_ON) {
-            _tvPowerState.value = TvPowerState.OFF
+        if (_tvPowerState.value != TvPowerState.WAKING) {
+            _tvPowerState.value = TvPowerState.UNREACHABLE
         }
         // 短重连低调提示：仅标记 RC 断开，不弹 Toast
         _connection.value = _connection.value.copy(
@@ -557,7 +557,7 @@ class TvRepository(
                 lastHeartbeatAt = System.currentTimeMillis(),
             )
             lastConnectDevice = device
-            _tvPowerState.value = TvPowerState.ON
+            _tvPowerState.value = TvPowerState.REACHABLE
 
             // UDT：存活复用，已死才重建（重建才查音量，不查 getMute）
             buildUdt(device, encrypted, existingPairing, rebuild = false)
@@ -775,7 +775,7 @@ class TvRepository(
         powerOnJob = null
         disconnectInternal()
         _connection.value = ConnectionState()
-        _tvPowerState.value = TvPowerState.OFF
+        _tvPowerState.value = TvPowerState.UNREACHABLE
         ConnectionService.stop(appContext)
     }
 
@@ -864,11 +864,15 @@ class TvRepository(
             .getOrElse { PowerOn.Report(false, false, false, false, false, false, listOf(it.message ?: "未知错误")) }
         Log.i(TAG, "开机尝试：${report.summary}")
         if (!report.attempted) {
-            notice("无法通过局域网开机：${report.reasons.joinToString("；")}", true)
+            notice(
+                "无法发起网络唤醒：${report.reasons.joinToString("；")}。" +
+                    "若电视处于息屏状态，请用电视遥控器或实体电源键唤醒。",
+                true,
+            )
             return@withContext false
         }
-        _tvPowerState.value = TvPowerState.POWERING_ON
-        notice("已发送开机信号（${report.summary}），正在等待电视启动…")
+        _tvPowerState.value = TvPowerState.WAKING
+        notice("已发送唤醒信号（${report.summary}），等待电视网络恢复…")
         // 集中由本任务驱动重连轮询，避免与既有重连循环打架
         reconnectJob?.cancel()
         reconnectJob = null
@@ -878,7 +882,9 @@ class TvRepository(
             val deadline = System.currentTimeMillis() + 75_000L
             while (isActive && System.currentTimeMillis() < deadline) {
                 if (_connection.value.isConnected) {
-                    _tvPowerState.value = TvPowerState.ON
+                    _tvPowerState.value = TvPowerState.REACHABLE
+                    // 网络恢复 ≠ 亮屏（息屏态网络也通），不做"开机成功"的断言
+                    notice("电视网络已恢复连接。若屏幕仍未亮起，请用电视遥控器或实体电源键唤醒屏幕。")
                     return@launch
                 }
                 if (_connection.value.phase != ConnectionPhase.CONNECTING) {
@@ -887,12 +893,13 @@ class TvRepository(
                 delay(3_000L)
             }
             if (_connection.value.isConnected) {
-                _tvPowerState.value = TvPowerState.ON
+                _tvPowerState.value = TvPowerState.REACHABLE
             } else {
-                _tvPowerState.value = TvPowerState.OFF
+                _tvPowerState.value = TvPowerState.UNREACHABLE
                 notice(
-                    "已发送开机信号，但 75s 内电视未回连。若电视已亮屏请在首页点「连接」；" +
-                        "部分机型不支持网络/蓝牙唤醒，需按实体电源键开机。",
+                    "75s 内未能恢复与电视的网络连接。" +
+                        "这台电视未广播 WOL/蓝牙唤醒信息，无法网络唤醒，请按实体电源键开机；" +
+                        "若电视实际已亮屏，请在首页手动连接。",
                     true,
                 )
             }
