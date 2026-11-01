@@ -15,6 +15,7 @@ import com.tvhelper.app.data.PairingState
 import com.tvhelper.app.data.PinnedApp
 import com.tvhelper.app.data.SettingsStore
 import com.tvhelper.app.data.TvDevice
+import com.tvhelper.app.data.TvPowerState
 import com.tvhelper.app.data.TvRepository
 import com.tvhelper.app.data.toPinned
 import com.tvhelper.app.net.DiscoveredDevice
@@ -53,6 +54,9 @@ class TvViewModel(
     val tvVolume: StateFlow<Int?> = repo.tvVolume
     val tvVolumeMax: StateFlow<Int> = repo.tvVolumeMax
     val tvMuted: StateFlow<Boolean?> = repo.tvMuted
+
+    /** 电视电源状态机（亮屏/待开机/关机），驱动电源键的状态区分 UI */
+    val tvPowerState: StateFlow<TvPowerState> = repo.tvPowerState
 
     val pinnedApps: StateFlow<List<PinnedApp>> =
         repo.pinnedApps.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -305,6 +309,19 @@ class TvViewModel(
         viewModelScope.launch {
             repo.toggleMuteKey()
         }
+    }
+
+    /**
+     * 电源键「开机」：电视息屏/关机、RC 已断时调用。
+     * 前置条件：本机需授予蓝牙权限（BLE 广播开机用），否则该路径被跳过——由仓库在提示里说明。
+     */
+    fun powerOn() {
+        viewModelScope.launch { repo.powerOn() }
+    }
+
+    /** 电源键「关机/息屏」：对已连接的电视发送 POWER 键 */
+    fun powerOff() {
+        viewModelScope.launch { repo.powerOff() }
     }
 
     /** 补发 UP 帧释放长按；失败（连接断开等）自动重试，重连成功后再兜底一次 */

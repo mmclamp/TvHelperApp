@@ -10,6 +10,7 @@ import com.tvhelper.app.protocol.airkan.AirkanCrypto
 import com.tvhelper.app.net.DiscoveredDevice
 import com.tvhelper.app.net.IpProbe
 import com.tvhelper.app.net.NetUtils
+import com.tvhelper.app.net.PowerOn
 import com.tvhelper.app.net.RcClient
 import com.tvhelper.app.net.RcEvent
 import com.tvhelper.app.net.RcException
@@ -43,6 +44,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -118,6 +120,14 @@ class TvRepository(
     private val _tvMuted = MutableStateFlow<Boolean?>(null)
     val tvMuted: StateFlow<Boolean?> = _tvMuted
 
+    /** 电视电源状态机（状态区分）：亮屏可遥控(ON) / 未连接(OFF) / 正在开机等待回连(POWERING_ON) */
+    private val _tvPowerState = MutableStateFlow(TvPowerState.OFF)
+    val tvPowerState: StateFlow<TvPowerState> = _tvPowerState
+
+    /** 最近一次成功连接的设备，作为「开机」指令的目标（息屏/关机后连接已断，据此重连） */
+    private var lastConnectDevice: TvDevice? = null
+    private var powerOnJob: Job? = null
+
     private val _notices = MutableSharedFlow<Notice>(extraBufferCapacity = 32)
     val notices: SharedFlow<Notice> = _notices
 
@@ -167,6 +177,9 @@ class TvRepository(
         rcPort = d.rcPort,
         udtPort = d.udtPort,
         model = d.model,
+        wifiMac = d.wifiMac,
+        btMac = d.btMac,
+        wol = d.wol,
     )
 
     /**
@@ -331,6 +344,9 @@ class TvRepository(
             message = if (encrypted) "遥控通道已就绪（加密）" else "遥控通道已就绪",
             lastHeartbeatAt = System.currentTimeMillis(),
         )
+        // 遥控通道就绪即视为电视亮屏、可遥控
+        lastConnectDevice = device
+        _tvPowerState.value = TvPowerState.ON
 
         // ---- 2) UDT 通道（尽力而为）
         val udtClient = try {
@@ -688,8 +704,11 @@ class TvRepository(
         userDisconnected = true
         reconnectJob?.cancel()
         reconnectJob = null
+        powerOnJob?.cancel()
+        powerOnJob = null
         disconnectInternal()
         _connection.value = ConnectionState()
+        _tvPowerState.value = TvPowerState.OFF
         ConnectionService.stop(appContext)
     }
 
@@ -748,6 +767,70 @@ class TvRepository(
             Log.w(TAG, "按键 UP 发送失败：${t.message}")
             false
         }
+    }
+
+    /**
+     * 电源键「关机/息屏」：对已连接的电视发送 POWER 键（DOWN+UP 经 RC 通道）。
+     * 电视收到可能熄屏或关机；若彻底关机，RC 连接会断开并进入自动重连（状态翻 OFF）。
+     */
+    suspend fun powerOff(): Boolean {
+        val ok = sendKey(TvKey.POWER)
+        if (ok) {
+            notice("已发送电源键，电视可能熄屏/关机")
+        }
+        return ok
+    }
+
+    /**
+     * 电源键「开机」：电视处于息屏/关机、RC 连接已断时调用。
+     * 依次尝试 Wake-on-LAN（需电视支持）、BLE 广播开机、经典蓝牙 SPP 开机（均依赖 mDNS 广播的 MAC/标志），
+     * 之后进入「待开机」状态并轮询重连，电视一旦回连即翻转为 ON。
+     * 依赖缺失的路径会被跳过并在提示里说明，不会抛异常。
+     */
+    suspend fun powerOn(): Boolean = withContext(Dispatchers.IO) {
+        val device = lastConnectDevice ?: run {
+            notice("没有可开机的电视记录，请先在首页连接一次", true)
+            return@withContext false
+        }
+        val report = runCatching { PowerOn(appContext).wake(device) }
+            .onFailure { Log.w(TAG, "开机唤醒失败：${it.message}") }
+            .getOrElse { PowerOn.Report(false, false, false, false, false, false, listOf(it.message ?: "未知错误")) }
+        Log.i(TAG, "开机尝试：${report.summary}")
+        if (!report.attempted) {
+            notice("无法通过局域网开机：${report.reasons.joinToString("；")}", true)
+            return@withContext false
+        }
+        _tvPowerState.value = TvPowerState.POWERING_ON
+        notice("已发送开机信号（${report.summary}），正在等待电视启动…")
+        // 集中由本任务驱动重连轮询，避免与既有重连循环打架
+        reconnectJob?.cancel()
+        reconnectJob = null
+        userDisconnected = false
+        powerOnJob?.cancel()
+        powerOnJob = scope.launch {
+            val deadline = System.currentTimeMillis() + 75_000L
+            while (isActive && System.currentTimeMillis() < deadline) {
+                if (_connection.value.isConnected) {
+                    _tvPowerState.value = TvPowerState.ON
+                    return@launch
+                }
+                if (_connection.value.phase != ConnectionPhase.CONNECTING) {
+                    connect(device, force = false)
+                }
+                delay(3_000L)
+            }
+            if (_connection.value.isConnected) {
+                _tvPowerState.value = TvPowerState.ON
+            } else {
+                _tvPowerState.value = TvPowerState.OFF
+                notice(
+                    "已发送开机信号，但 75s 内电视未回连。若电视已亮屏请在首页点「连接」；" +
+                        "部分机型不支持网络/蓝牙唤醒，需按实体电源键开机。",
+                    true,
+                )
+            }
+        }
+        true
     }
 
     /** 音量请求串行化：Social 9093 单连接，同时只允许一个在途音量请求 */

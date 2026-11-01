@@ -1,8 +1,13 @@
 package com.tvhelper.app.ui.remote
 
+import android.Manifest
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import android.os.Build
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -50,7 +55,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import com.tvhelper.app.data.ConnectionState
+import com.tvhelper.app.data.TvPowerState
 import com.tvhelper.app.protocol.rc.RcTouchCodec
 import com.tvhelper.app.protocol.rc.TvKey
 import com.tvhelper.app.ui.common.PillButton
@@ -115,7 +122,11 @@ fun RemoteScreen(vm: TvViewModel, onGoConnect: () -> Unit = {}) {
     val tvVolume by vm.tvVolume.collectAsState()
     val tvVolumeMax by vm.tvVolumeMax.collectAsState()
     val tvMuted by vm.tvMuted.collectAsState()
+    val tvPowerState by vm.tvPowerState.collectAsState()
+    val lastDevice by vm.lastDevice.collectAsState()
     val connected = connection.isConnected
+    // 电源键可用性：已连接 / 或记住了设备（息屏关机态仍可点开机）
+    val deviceKnown = connected || lastDevice != null
     val palette = remotePalette()
     var trackpadMode by remember { mutableStateOf(false) }
 
@@ -169,7 +180,14 @@ fun RemoteScreen(vm: TvViewModel, onGoConnect: () -> Unit = {}) {
                     )
 
                     // 快捷行：电源 / 静音 / 音量减 / 音量加（四枚等距中性圆钮）
-                    QuickRow(vm = vm, enabled = connected, muted = tvMuted, palette = palette)
+                    QuickRow(
+                        vm = vm,
+                        enabled = connected,
+                        powerState = tvPowerState,
+                        deviceKnown = deviceKnown,
+                        muted = tvMuted,
+                        palette = palette,
+                    )
 
                     // 音量条：细线 + 圆点滑块，两端显示当前/最大（对标参考图进度条语言）
                     VolumeBar(
@@ -269,7 +287,14 @@ private fun ModeChip(text: String, selected: Boolean, onClick: () -> Unit, palet
 }
 
 @Composable
-private fun QuickRow(vm: TvViewModel, enabled: Boolean, muted: Boolean?, palette: RemotePalette) {
+private fun QuickRow(
+    vm: TvViewModel,
+    enabled: Boolean,
+    powerState: TvPowerState,
+    deviceKnown: Boolean,
+    muted: Boolean?,
+    palette: RemotePalette,
+) {
     val muteActive = muted == true
     val muteUnknown = muted == null
     val muteContainer = when {
@@ -291,7 +316,7 @@ private fun QuickRow(vm: TvViewModel, enabled: Boolean, muted: Boolean?, palette
         Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceEvenly,
     ) {
-        PowerButton(vm = vm, enabled = enabled, palette = palette)
+        PowerButton(vm = vm, powerState = powerState, deviceKnown = deviceKnown, palette = palette)
         LabeledKey(
             label = muteLabel, enabled = enabled, palette = palette,
             container = muteContainer,
@@ -587,35 +612,78 @@ private fun LabeledKey(
 }
 
 @Composable
-private fun PowerButton(vm: TvViewModel, enabled: Boolean, palette: RemotePalette) {
-    // 电源是高代价操作（可能直接关电视）：按下抬起后弹确认框，防误触
-    var confirmPower by remember { mutableStateOf(false) }
+private fun PowerButton(
+    vm: TvViewModel,
+    powerState: TvPowerState,
+    deviceKnown: Boolean,
+    palette: RemotePalette,
+) {
+    val context = LocalContext.current
+    // 电源是高代价操作（可能直接关电视）：亮屏态点按弹确认框，防误触
+    var confirmOff by remember { mutableStateOf(false) }
+
+    // 息屏/关机态点按开机：BLE 广播开机需要蓝牙权限（Android 12+ 运行时申请）
+    val btPerms = if (Build.VERSION.SDK_INT >= 31) listOf(
+        Manifest.permission.BLUETOOTH_ADVERTISE,
+        Manifest.permission.BLUETOOTH_CONNECT,
+        Manifest.permission.BLUETOOTH_SCAN,
+    ) else emptyList()
+    val permLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { vm.powerOn() }
+
+    fun tryPowerOn() {
+        if (btPerms.isNotEmpty() && btPerms.any {
+                ContextCompat.checkSelfPermission(context, it) != android.content.pm.PackageManager.PERMISSION_GRANTED
+            }
+        ) {
+            permLauncher.launch(btPerms.toTypedArray())
+        } else {
+            vm.powerOn()
+        }
+    }
+
+    // 状态区分：颜色 / 标签 / 行为随电源状态变化
+    val (iconTint, label) = when (powerState) {
+        TvPowerState.ON -> TvColors.danger to "关机"
+        TvPowerState.POWERING_ON -> palette.sub to "开机中…"
+        TvPowerState.OFF -> palette.keyGlyph to "开机"
+    }
+    val enabled = deviceKnown && powerState != TvPowerState.POWERING_ON
+
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         RoundButton(
             onPress = {},
-            onRelease = { confirmPower = true },
+            onRelease = {
+                when (powerState) {
+                    TvPowerState.ON -> confirmOff = true
+                    TvPowerState.OFF -> tryPowerOn()
+                    TvPowerState.POWERING_ON -> { /* 等待回连，忽略 */ }
+                }
+            },
             enabled = enabled,
             size = 58,
-            container = TvColors.danger.copy(alpha = 0.16f),
-            contentColor = TvColors.danger,
+            container = TvColors.danger.copy(alpha = if (powerState == TvPowerState.ON) 0.16f else 0.10f),
+            contentColor = iconTint,
             borderColor = TvColors.danger.copy(alpha = 0.4f),
             pressColor = TvColors.danger,
         ) {
-            PowerIcon(tint = TvColors.danger, modifier = Modifier.size(26.dp))
+            PowerIcon(tint = iconTint, modifier = Modifier.size(26.dp))
         }
         Spacer(Modifier.height(6.dp))
-        Text("电源", style = MaterialTheme.typography.labelSmall, color = palette.label)
+        Text(label, style = MaterialTheme.typography.labelSmall, color = palette.label)
     }
-    if (confirmPower) {
+
+    if (confirmOff) {
         AlertDialog(
-            onDismissRequest = { confirmPower = false },
-            title = { Text("发送电源键") },
+            onDismissRequest = { confirmOff = false },
+            title = { Text("关闭电视") },
             text = { Text("将向电视发送电源键，电视可能关机或熄屏。") },
             confirmButton = {
-                TextButton(onClick = { confirmPower = false; vm.sendKey(TvKey.POWER) }) { Text("发送") }
+                TextButton(onClick = { confirmOff = false; vm.powerOff() }) { Text("发送") }
             },
             dismissButton = {
-                TextButton(onClick = { confirmPower = false }) { Text("取消") }
+                TextButton(onClick = { confirmOff = false }) { Text("取消") }
             },
         )
     }

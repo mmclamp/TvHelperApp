@@ -10,8 +10,26 @@ data class TvDevice(
     val rcPort: Int = 30612,
     val udtPort: Int = 6093,
     val model: String? = null,
+    /** 局域网 Wi-Fi MAC（WOL 魔术包目标地址来源） */
+    val wifiMac: String? = null,
+    /** 蓝牙 MAC（BLE 广播开机 / 经典蓝牙 SPP 开机目标）。mDNS TXT 可能不含，缺失则相应开机路径不可用 */
+    val btMac: String? = null,
+    /** 是否支持 WOL 唤醒（mDNS TXT `wol` 标志）。false=电视不支持网络唤醒 */
+    val wol: Boolean = false,
 ) {
     val displayName: String get() = name.ifBlank { host }
+}
+
+/**
+ * 电视电源状态机（状态区分）。
+ * - [ON]：RC/UDT 已连接（电视有响应 = 亮屏/可遥控）。
+ * - [OFF]：未连接（已息屏或已关机/待机）。电源键应触发开机序列。
+ * - [POWERING_ON]：已发出开机指令、正在等待电视回连（自动重连窗口期），连上即翻转 ON。
+ */
+enum class TvPowerState {
+    ON,
+    OFF,
+    POWERING_ON,
 }
 
 enum class ConnectionPhase {

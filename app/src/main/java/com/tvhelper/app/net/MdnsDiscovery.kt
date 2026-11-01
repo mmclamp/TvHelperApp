@@ -19,9 +19,48 @@ data class DiscoveredDevice(
     val rcPort: Int = 30612,
     val udtPort: Int = 6093,
     val attributes: Map<String, String> = emptyMap(),
+    /** 局域网 Wi-Fi MAC（WOL 目标）。原版 ParcelDeviceData.f5427t */
+    val wifiMac: String? = null,
+    /** 蓝牙 MAC（BLE/经典蓝牙开机目标）。原版 ParcelDeviceData.f5426r */
+    val btMac: String? = null,
+    /** 是否支持 WOL 唤醒（mDNS TXT `wol` 标志）。原版 ParcelDeviceData.f5425q */
+    val wol: Boolean = false,
 ) {
     val model: String? get() = attributes["model"] ?: attributes["md"]
     val mac: String? get() = attributes["mac"]
+
+    /** 从 mDNS TXT 候选键里解析开机所需元数据（wol / 蓝牙 MAC / Wi-Fi MAC） */
+    companion object {
+        /** 蓝牙 MAC 可能的 TXT 键（原版 `f5426r` 来源，不同机型写法不一） */
+        private val BT_KEYS = listOf("bt_mac", "btmac", "bt", "ble", "bluetooth_mac", "bluetooth")
+
+        fun fromAttributes(
+            id: String,
+            name: String,
+            host: String,
+            rcPort: Int,
+            udtPort: Int,
+            attributes: Map<String, String>,
+        ): DiscoveredDevice {
+            val wifiMac = attributes["mac"]
+                ?.takeIf { it.matches(Regex("([0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}")) }
+            val btMac = BT_KEYS.firstNotNullOfOrNull { attributes[it] }
+                ?.takeIf { it.matches(Regex("([0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}")) }
+            val wolFlag = attributes["wol"]?.trim()?.lowercase()
+            val wol = wolFlag == "1" || wolFlag == "true" || wolFlag == "yes"
+            return DiscoveredDevice(
+                id = id,
+                name = name,
+                host = host,
+                rcPort = rcPort,
+                udtPort = udtPort,
+                attributes = attributes,
+                wifiMac = wifiMac,
+                btMac = btMac,
+                wol = wol,
+            )
+        }
+    }
 }
 
 /**
@@ -80,6 +119,9 @@ class MdnsDiscovery(private val context: Context) {
                 rcPort = if (d.rcPort != 30612) d.rcPort else prev.rcPort,
                 udtPort = if (d.udtPort != 6093) d.udtPort else prev.udtPort,
                 attributes = prev.attributes + d.attributes,
+                wifiMac = d.wifiMac ?: prev.wifiMac,
+                btMac = d.btMac ?: prev.btMac,
+                wol = d.wol || prev.wol,
             )
             merged[d.id] = next
             trySend(next)
@@ -120,19 +162,20 @@ class MdnsDiscovery(private val context: Context) {
                             val isRc = si.serviceType?.contains("_rc.") == true
                             // milink 服务会把真实 TCP 端口写在 TXT 里（tcp=6093），比 SRV 更权威
                             val txtTcp = attrs["tcp"]?.trim()?.toIntOrNull()
+                            val rcPort = if (isRc && port > 0) port else defaultRc
+                            val udtPort = when {
+                                isRc -> defaultUdt
+                                txtTcp != null && txtTcp > 0 -> txtTcp
+                                port > 0 -> port
+                                else -> defaultUdt
+                            }
                             emitMerged(
-                                DiscoveredDevice(
+                                DiscoveredDevice.fromAttributes(
                                     id = ip,
                                     name = si.serviceName.orEmpty().ifBlank { ip },
                                     host = ip,
-                                    // RC 端口：以 SRV 广播为准（h2.h.M 即取该值），缺失才用默认
-                                    rcPort = if (isRc && port > 0) port else defaultRc,
-                                    udtPort = when {
-                                        isRc -> defaultUdt
-                                        txtTcp != null && txtTcp > 0 -> txtTcp
-                                        port > 0 -> port
-                                        else -> defaultUdt
-                                    },
+                                    rcPort = rcPort,
+                                    udtPort = udtPort,
                                     attributes = attrs,
                                 )
                             )
