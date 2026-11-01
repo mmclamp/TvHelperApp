@@ -284,39 +284,7 @@ class TvRepository(
             return@withContext false
         }
         rc = rcClient
-        eventJob = scope.launch {
-            rcClient.events.collect { ev ->
-                when (ev) {
-                    is RcEvent.ServerHeartbeat ->
-                        _connection.value = _connection.value.copy(lastHeartbeatAt = System.currentTimeMillis())
-                    is RcEvent.Closed -> {
-                        if (userDisconnected) return@collect
-                        // 旧客户端的 Closed 事件（已被新连接取代）不处理，防止重连风暴
-                        if (rcClient !== rc) return@collect
-                        // RC socket 被系统/电视断开：自动重连（退避 2s/5s/10s…永不放弃）
-                        scheduleReconnect(device, ev.cause)
-                    }
-                    is RcEvent.Other -> {
-                        // 播放控制响应（type 3）：payload = 7 字节头 + data，先拆头再解析
-                        if (ev.type == RcCodec.TYPE_PLAY) {
-                            val parsed = RcPlayControlCodec.parseResponse(ev.payload)
-                            Log.i(
-                                TAG,
-                                "← playCtrl subType=${parsed?.first} " +
-                                    "data=${parsed?.second?.joinToString(" ") { "%02x".format(it) }}",
-                            )
-                            parsed?.let { (sub, data) ->
-                                // 原版 l.p：子类型 8 = query result（7 是查询请求）
-                                if (sub == RcPlayControlCodec.SUB_QUERY_RESULT) {
-                                    RcPlayControlCodec.extractVolume(data)?.let { _tvVolume.value = it }
-                                }
-                            }
-                        }
-                    }
-                    else -> Unit
-                }
-            }
-        }
+        observeRc(rcClient, device)
 
         val version = rcClient.negotiated ?: RcVersionCodec.RcVersionResponse(
             RcVersionCodec.CODE_RESPONSE,
@@ -348,16 +316,108 @@ class TvRepository(
         lastConnectDevice = device
         _tvPowerState.value = TvPowerState.ON
 
-        // ---- 2) UDT 通道（尽力而为）
+        // ---- 2) UDT 通道（首连强制重建）
+        buildUdt(device, encrypted, existingPairing, rebuild = true)
+
+        settings.setLastDevice(device)
+        notice("已连接 ${device.displayName}")
+        ConnectionService.start(appContext)
+        // 连接成功自动刷新应用列表（静默，失败不打扰）
+        if (udt != null) {
+            runCatching { refreshInstalledApps(quiet = true) }
+        }
+
+        // ---- 3) 固件要求加密但还没配对：自动发起授权配对（电视会弹 6 位授权码）
+        if (!encrypted && version.needsCrypto && existingPairing == null) {
+            notice("该电视固件要求加密通道，正在发起授权配对…")
+            startPairingInternal(device.host)
+        }
+        true
+    }
+
+    /** 观察 RC 事件：心跳保活、断线自动重连、播放控制响应（音量）解析。供首连与重连复用。 */
+    private fun observeRc(rcClient: RcClient, device: TvDevice) {
+        eventJob = scope.launch {
+            rcClient.events.collect { ev ->
+                when (ev) {
+                    is RcEvent.ServerHeartbeat ->
+                        _connection.value = _connection.value.copy(lastHeartbeatAt = System.currentTimeMillis())
+                    is RcEvent.Closed -> {
+                        if (userDisconnected) return@collect
+                        // 旧客户端的 Closed 事件（已被新连接取代）不处理，防止重连风暴
+                        if (rcClient !== rc) return@collect
+                        scheduleReconnect(device, ev.cause)
+                    }
+                    is RcEvent.Other -> {
+                        if (ev.type == RcCodec.TYPE_PLAY) {
+                            val parsed = RcPlayControlCodec.parseResponse(ev.payload)
+                            parsed?.let { (sub, data) ->
+                                // 原版 l.p：子类型 8 = query result（7 是查询请求）
+                                if (sub == RcPlayControlCodec.SUB_QUERY_RESULT) {
+                                    RcPlayControlCodec.extractVolume(data)?.let { _tvVolume.value = it }
+                                }
+                            }
+                        }
+                    }
+                    else -> Unit
+                }
+            }
+        }
+    }
+
+    /**
+     * 建立 UDT（6093）+ Social（9093）通道。
+     * rebuild=true：无条件重建（首连/用户主动连）；
+     * rebuild=false（RC 重连场景）：既有 UDT/Social 仍存活则直接复用，不重建、不重查音量，
+     * 避免 RC 抖动时连带重建健康通道造成刷屏；仅当既有通道已死才重建。
+     */
+    private suspend fun buildUdt(
+        device: TvDevice,
+        encrypted: Boolean,
+        existingPairing: TvPairing?,
+        rebuild: Boolean,
+    ): Boolean = withContext(Dispatchers.IO) {
+        if (!rebuild && udt?.isConnected == true && socialUdt?.isConnected == true) {
+            Log.i(TAG, "UDT/Social 仍存活，RC 重连复用既有通道，不重建")
+            return@withContext true
+        }
+        val keyPair = pairingStore.ensureKeyPair()
         val udtClient = try {
             connectUdtWithFallback(device.host, device.udtPort)
         } catch (t: Throwable) {
             Log.w(TAG, "UDT 连接失败：${t.message}")
+            _connection.value = _connection.value.copy(udtConnected = false)
+            return@withContext false
+        }
+        if (encrypted && existingPairing != null) {
+            udtClient.setEncryption(
+                UdtEncryption(
+                    tvAuthPublicKey = existingPairing.tvAuthPublicKey,
+                    ourDeviceId = keyPair.publicKeyMd5,
+                    cbcKey = existingPairing.cbcKey,
+                    cbcIv = existingPairing.cbcIv,
+                )
+            )
+        }
+        udt = udtClient
+        api = TvApi(udtClient)
+        scope.launch { udtClient.pushes.collect { handlePush(it) } }
+        _connection.value = _connection.value.copy(
+            phase = ConnectionPhase.READY,
+            udtConnected = true,
+            message = if (encrypted) "已连接（加密通道）" else "已连接",
+        )
+
+        // Social 9093：音量专用（原版 v9.c: appId=1026）
+        val social = try {
+            UdtClient(device.host, SOCIAL_PORT, appId = SOCIAL_APP_ID).also { it.connect() }
+        } catch (t: Throwable) {
+            Log.w(TAG, "Social 9093 连接失败：${t.message}")
             null
         }
-        if (udtClient != null) {
+        if (social != null) {
             if (encrypted && existingPairing != null) {
-                udtClient.setEncryption(
+                social.setEncryption(
                     UdtEncryption(
                         tvAuthPublicKey = existingPairing.tvAuthPublicKey,
                         ourDeviceId = keyPair.publicKeyMd5,
@@ -366,62 +426,10 @@ class TvRepository(
                     )
                 )
             }
-            udt = udtClient
-            api = TvApi(udtClient)
-            scope.launch {
-                udtClient.pushes.collect { push -> handlePush(push) }
-            }
-            _connection.value = _connection.value.copy(
-                phase = ConnectionPhase.READY,
-                udtConnected = true,
-                message = if (encrypted) "已连接（加密通道）" else "已连接",
-            )
-        } else {
-            _connection.value = _connection.value.copy(
-                udtConnected = false,
-                message = "遥控已就绪；应用管理不可用（UDT 6093 未连通）",
-            )
-        }
-
-        // ---- 3) Social 通道（9093，尽力而为）：音量专用（原版 v9.c: appId=1026）
-        if (udtClient != null) {
-            scope.launch {
-                val social = try {
-                    UdtClient(device.host, SOCIAL_PORT, appId = SOCIAL_APP_ID).also { it.connect() }
-                } catch (t: Throwable) {
-                    Log.w(TAG, "Social 9093 连接失败：${t.message}")
-                    return@launch
-                }
-                if (encrypted && existingPairing != null) {
-                    social.setEncryption(
-                        UdtEncryption(
-                            tvAuthPublicKey = existingPairing.tvAuthPublicKey,
-                            ourDeviceId = keyPair.publicKeyMd5,
-                            cbcKey = existingPairing.cbcKey,
-                            cbcIv = existingPairing.cbcIv,
-                        )
-                    )
-                }
-                socialUdt = social
-                socialApi = TvApi(social)
-                Log.i(TAG, "Social 9093 已就绪")
-                queryVolume()
-            }
-        }
-
-        settings.setLastDevice(device)
-        notice("已连接 ${device.displayName}")
-        ConnectionService.start(appContext)
-        // ---- 查询电视当前音量：Social 9093 通道就绪后自动触发（见上方 launch）
-        // ---- 连接成功自动刷新应用列表（静默，失败不打扰用户）
-        if (udtClient != null) {
-            runCatching { refreshInstalledApps(quiet = true) }
-        }
-
-        // ---- 3) 固件要求加密但还没配对：自动发起授权配对（电视会弹 6 位授权码）
-        if (!encrypted && version.needsCrypto && existingPairing == null) {
-            notice("该电视固件要求加密通道，正在发起授权配对…")
-            startPairingInternal(device.host)
+            socialUdt = social
+            socialApi = TvApi(social)
+            Log.i(TAG, "Social 9093 已就绪")
+            queryVolume() // 仅 UDT 实际重建时查一次音量（不再查 getMute）
         }
         true
     }
@@ -480,26 +488,85 @@ class TvRepository(
      * RC 断线后的自动重连：指数退避（2s/5s/10s 封顶），永不放弃——
      * 存活持久化：只要未主动断开就持续重试，直到连上或用户主动断开。
      */
+    /**
+     * RC 断线调度：指数退避（2s/5s/10s 封顶），永不放弃。
+     * 仅重建 RC 通道（轻量），复用或按需重建 UDT；重连成功不弹 Toast，避免频繁重连刷屏。
+     */
     private fun scheduleReconnect(device: TvDevice, cause: Throwable? = null) {
-        Log.i(TAG, "RC 断线 cause=${cause?.javaClass?.simpleName}: ${cause?.message}")
         val attempt = ++reconnectAttempts
         val backoff = reconnectBackoffMs[minOf(attempt - 1, reconnectBackoffMs.size - 1)]
-        Log.i(TAG, "RC 断线，${backoff / 1000}s 后自动重连（第 $attempt 次）")
+        Log.i(TAG, "RC 断线 cause=${cause?.javaClass?.simpleName}: ${cause?.message}，${backoff / 1000}s 后自动重连（第 $attempt 次）")
+        // 断线即视为电视可能已关机/息屏：电源状态翻 OFF（开机等待期除外，避免覆盖 POWERING_ON）
+        // 修复：此前只在主动 disconnect 时翻 OFF，电视自己关机走断线回调，电源键残留 ON 误发关机键
+        if (_tvPowerState.value != TvPowerState.POWERING_ON) {
+            _tvPowerState.value = TvPowerState.OFF
+        }
+        // 短重连低调提示：仅标记 RC 断开，不弹 Toast
         _connection.value = _connection.value.copy(
             phase = ConnectionPhase.CONNECTING,
             rcConnected = false,
-            message = "连接断开，正在自动重连（第 $attempt 次）…",
+            message = "连接中断，正在重连…",
         )
         reconnectJob?.cancel()
         reconnectJob = scope.launch {
             delay(backoff)
             if (userDisconnected) return@launch
-            // 先清空引用再连接：connectInternal 会 cancel reconnectJob，
-            // 不清空会把自己 cancel 掉（日志「自动重连失败：StandaloneCoroutine was cancelled」）
             reconnectJob = null
-            // 失败不算完：续排下一轮退避，直到连上或用户主动断开（attempts 保留，退避逐级升档）
-            val ok = runCatching { connect(device, force = false) }.getOrDefault(false)
+            val ok = runCatching { reconnectRc(device) }.getOrDefault(false)
             if (!ok && !userDisconnected) scheduleReconnect(device)
+        }
+    }
+
+    /** RC 断线后的轻量重连：仅重建 RC 通道，复用（或按需重建）UDT/Social，不弹 Toast 打扰。 */
+    private suspend fun reconnectRc(device: TvDevice): Boolean = withContext(Dispatchers.IO) {
+        building = true
+        try {
+            val existingPairing = pairingStore.pairingFor(device.host)
+            val keyPair = pairingStore.ensureKeyPair()
+            // 旧 RC 已断，取消其观察协程防止重复调度重连
+            eventJob?.cancel()
+            eventJob = null
+            val rcClient = try {
+                connectRcWithFallback(device.host, device.rcPort, keyPair.publicKeyMd5)
+            } catch (t: Throwable) {
+                Log.w(TAG, "RC 重连失败：${t.message}")
+                _connection.value = _connection.value.copy(rcConnected = false)
+                return@withContext false
+            }
+            rc = rcClient
+            observeRc(rcClient, device)
+
+            val version = rcClient.negotiated ?: RcVersionCodec.RcVersionResponse(
+                RcVersionCodec.CODE_RESPONSE,
+                RcVersionCodec.DEFAULT_VERSION,
+                null,
+                null,
+            )
+            var encrypted = false
+            version.secretKey?.let { sk -> encrypted = rcClient.applySecretKey(sk, keyPair.privateKey) }
+            if (!encrypted && existingPairing != null && version.needsCrypto) {
+                val resp = rcClient.resendVersionRequestAndWait()
+                resp?.secretKey?.let { sk -> encrypted = rcClient.applySecretKey(sk, keyPair.privateKey) }
+            }
+
+            _connection.value = _connection.value.copy(
+                phase = if (udt?.isConnected == true) ConnectionPhase.READY else ConnectionPhase.RC_READY,
+                rcConnected = true,
+                encrypted = encrypted,
+                message = if (encrypted) "遥控通道已恢复（加密）" else "遥控通道已恢复",
+                lastHeartbeatAt = System.currentTimeMillis(),
+            )
+            lastConnectDevice = device
+            _tvPowerState.value = TvPowerState.ON
+
+            // UDT：存活复用，已死才重建（重建才查音量，不查 getMute）
+            buildUdt(device, encrypted, existingPairing, rebuild = false)
+
+            reconnectAttempts = 0
+            Log.i(TAG, "RC 重连成功（UDT ${if (udt?.isConnected == true) "复用" else "已重建"}）")
+            true
+        } finally {
+            building = false
         }
     }
 
@@ -898,8 +965,9 @@ class TvRepository(
                         _tvMuted.value = resp.muted
                         Log.i(TAG, "电视音量：${resp.current}/${resp.max} 静音：${resp.muted}（来自 getVolume 响应）")
                     } else {
-                        Log.i(TAG, "电视音量：${resp.current}/${resp.max}（getVolume 未携带静音字段，尝试 getMute 兜底）")
-                        queryMute()
+                        // getVolume 未携带静音字段：本机实测 getMute 方法 status=21104 不存在，
+                        // 不再发必败查询，静音态保持「未知」（由 App 内静音键本地翻转）
+                        Log.i(TAG, "电视音量：${resp.current}/${resp.max}（getVolume 未携带静音字段，静音态保持未知）")
                     }
                 } else {
                     Log.w(TAG, "音量查询无结果（方法可能不受支持）")
