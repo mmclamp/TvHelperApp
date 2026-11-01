@@ -66,28 +66,35 @@ class TvApi(private val udt: UdtClient) {
         return msg.result
     }
 
+    /** 电视音量查询结果：当前值 / 最大值 / 静音标志（null=响应未携带该字段，协议不支持或方法缺失） */
+    data class VolumeResult(val current: Int, val max: Int, val muted: Boolean?)
+
     /**
      * 查询电视音量（UDT SocialRequest.getVolume）。
-     * 返回 (当前值, 最大值)；解析失败返回 null。
+     * 原版小米电视助手即此路径：getVolume 响应除 volum/maxVolum 外常一并携带静音标志
+     * （isMute/mute/muted 任一字段），一次查询同时拿到音量与静音状态——并不单独调 getMute。
+     * 返回 null 表示解析失败（方法不受支持）。
      */
-    suspend fun getVolume(): Pair<Int, Int>? = volumeFrom(
+    suspend fun getVolume(): VolumeResult? = volumeFrom(
         udt.call(UdtMethods.getVolume(nextId()), UdtMethods.TIMEOUT_DEFAULT),
     )
 
-    /** 设置电视音量（绝对值）。返回 (生效值, 最大值)，失败 null */
-    suspend fun setVolume(volume: Int): Pair<Int, Int>? = volumeFrom(
+    /** 设置电视音量（绝对值）。返回生效值/最大值，失败 null；响应可能同样携带静音标志 */
+    suspend fun setVolume(volume: Int): VolumeResult? = volumeFrom(
         udt.call(UdtMethods.setVolume(volume, nextId()), UdtMethods.TIMEOUT_DEFAULT),
     )
 
     /**
-     * 查询电视静音状态（UDT SocialRequest.getMute）。
-     * 返回 true=已静音 / false=未静音；解析失败（部分固件无此方法）返回 null，
-     * 由上层降级为本地跟踪。响应容错：isMute/mute/muted 任一字段为真即视为静音。
+     * 查询电视静音状态（UDT SocialRequest.getMute）——仅作兜底。
+     * 实测多款电视 getMute 反射不存在（status=21104），本 App 主路径改为从 getVolume 响应解析静音。
+     * 返回 true=已静音 / false=未静音；解析失败（部分固件无此方法）返回 null。
+     * 响应容错：isMute/mute/muted 任一字段为真即视为静音。
      */
     suspend fun getMute(): Boolean? {
         val msg = udt.call(UdtMethods.getMute(nextId()), UdtMethods.TIMEOUT_DEFAULT)
-        val r = msg.result ?: return null
-        Log.d(TAG, "mute resp status=${msg.status} result=$r")
+        val r = msg.result
+        Log.i(TAG, "mute resp status=${msg.status} result=$r")
+        if (r == null || msg.status != 0) return null
         val m = when {
             r.has("isMute") -> r.optBoolean("isMute", false)
             r.has("mute") -> r.optBoolean("mute", false)
@@ -97,10 +104,10 @@ class TvApi(private val udt: UdtClient) {
         return m
     }
 
-    private fun volumeFrom(msg: UdtCodec.Message): Pair<Int, Int>? {
-        val ok = msg.status
+    private fun volumeFrom(msg: UdtCodec.Message): VolumeResult? {
         val r = msg.result
-        Log.d(TAG, "volume resp status=$ok result=$r dataLen=${msg.data.size}")
+        // INFO 级打印完整 result，便于确认响应是否携带静音字段（取证用）
+        Log.i(TAG, "volume resp status=${msg.status} result=$r dataLen=${msg.data.size}")
         if (r == null) return null
         // 容错：result 可能是 {"volum":x,"maxVolum":y}，也可能是裸数值或文本
         val v: Int = when {
@@ -110,7 +117,14 @@ class TvApi(private val udt: UdtClient) {
         }
         if (v < 0) return null
         val max = r.optInt("maxVolum", r.optInt("maxVolume", 100))
-        return v to max
+        // 静音标志：响应可能携带 isMute/mute/muted 任一字段（原版即此来源）
+        val muted = when {
+            r.has("isMute") -> r.optBoolean("isMute", false)
+            r.has("mute") -> r.optBoolean("mute", false)
+            r.has("muted") -> r.optBoolean("muted", false)
+            else -> null
+        }
+        return VolumeResult(v, max, muted)
     }
 
     private suspend fun fireAndForget(method: String): Int {

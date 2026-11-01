@@ -390,7 +390,6 @@ class TvRepository(
                 socialApi = TvApi(social)
                 Log.i(TAG, "Social 9093 已就绪")
                 queryVolume()
-                queryMute()
             }
         }
 
@@ -781,8 +780,8 @@ class TvRepository(
             volumeMutex.withLock {
                 val resp = withContext(NonCancellable) { a.setVolume(volume) }
                 if (resp != null) {
-                    _tvVolume.value = resp.first
-                    _tvVolumeMax.value = resp.second
+                    _tvVolume.value = resp.current
+                    _tvVolumeMax.value = resp.max
                 } else {
                     // 无响应体但请求成功时乐观回填
                     _tvVolume.value = volume.coerceIn(0, _tvVolumeMax.value)
@@ -799,31 +798,37 @@ class TvRepository(
         }
     }
 
-    /** 查询电视当前音量（Social 9093 通道 getVolume，响应含 volum/maxVolum） */
+    /** 查询电视当前音量（Social 9093 通道 getVolume）。
+     *  关键：getVolume 响应常一并携带静音标志（isMute/mute/muted），原版小米电视助手即此路径——
+     *  连接时一次性拿到音量 + 静音真实状态，不再依赖（多固件不存在的）getMute 方法。 */
     fun queryVolume() {
         val a = socialApi ?: api ?: return
         scope.launch {
             try {
-                volumeMutex.withLock {
+                val resp = volumeMutex.withLock {
                     withContext(NonCancellable) { a.getVolume() }
                 }
-            } catch (t: Throwable) {
-                Log.w(TAG, "音量查询失败：${t.message}")
-                null
-            }            ?.let { resp ->
                 if (resp != null) {
-                    _tvVolume.value = resp.first
-                    _tvVolumeMax.value = resp.second
-                    Log.i(TAG, "电视音量：${resp.first}/${resp.second}")
+                    _tvVolume.value = resp.current
+                    _tvVolumeMax.value = resp.max
+                    if (resp.muted != null) {
+                        _tvMuted.value = resp.muted
+                        Log.i(TAG, "电视音量：${resp.current}/${resp.max} 静音：${resp.muted}（来自 getVolume 响应）")
+                    } else {
+                        Log.i(TAG, "电视音量：${resp.current}/${resp.max}（getVolume 未携带静音字段，尝试 getMute 兜底）")
+                        queryMute()
+                    }
                 } else {
                     Log.w(TAG, "音量查询无结果（方法可能不受支持）")
                 }
+            } catch (t: Throwable) {
+                Log.w(TAG, "音量查询失败：${t.message}")
             }
         }
     }
 
-    /** 查询电视当前静音状态（Social 9093 通道 getMute，部分固件支持）。
-     *  结果写入 _tvMuted（true/false）；不支持（返回空）时保持 null 降级本地跟踪。 */
+    /** 静音状态兜底查询（Social 9093 通道 getMute，部分固件支持，本机实测为 status=21104 不存在）。
+     *  主路径是 getVolume 响应解析；仅当 getVolume 未携带静音字段时才调用。 */
     fun queryMute() {
         val a = socialApi ?: api ?: return
         scope.launch {
@@ -831,9 +836,9 @@ class TvRepository(
                 val m = withContext(NonCancellable) { a.getMute() }
                 if (m != null) {
                     _tvMuted.value = m
-                    Log.i(TAG, "电视静音状态：$m")
+                    Log.i(TAG, "电视静音状态：$m（来自 getMute 兜底）")
                 } else {
-                    Log.w(TAG, "静音查询无结果（方法可能不受支持），保持本地/未知状态")
+                    Log.w(TAG, "静音查询无结果（getMute 方法可能不受支持），保持本地/未知状态")
                 }
             } catch (t: Throwable) {
                 Log.w(TAG, "静音查询失败：${t.message}")
