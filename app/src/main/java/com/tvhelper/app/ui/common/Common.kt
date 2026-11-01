@@ -140,6 +140,7 @@ fun RoundButton(
     contentColor: Color = MaterialTheme.colorScheme.onSurfaceVariant,
     borderColor: Color? = null,
     enabled: Boolean = true,
+    pressColor: Color = MaterialTheme.colorScheme.primary,
     content: @Composable () -> Unit,
 ) {
     val interaction = remember { MutableInteractionSource() }
@@ -149,7 +150,7 @@ fun RoundButton(
     val bg by animateColorAsState(
         targetValue = when {
             !enabled -> container.copy(alpha = 0.4f)
-            pressed -> MaterialTheme.colorScheme.primary.copy(alpha = 0.26f)
+            pressed -> pressColor.copy(alpha = 0.26f)
             else -> container
         },
         label = "roundBg",

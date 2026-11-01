@@ -1,16 +1,10 @@
 package com.tvhelper.app.ui.remote
 
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.indication
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.PressInteraction
-import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,7 +15,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -30,51 +24,37 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowLeft
-import androidx.compose.material.icons.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.tvhelper.app.data.ConnectionState
 import com.tvhelper.app.protocol.rc.RcTouchCodec
 import com.tvhelper.app.protocol.rc.TvKey
 import com.tvhelper.app.ui.common.PillButton
 import com.tvhelper.app.ui.common.RoundButton
-import kotlinx.coroutines.launch
-
-import com.tvhelper.app.ui.common.SectionTitle
 import com.tvhelper.app.ui.common.StatusDot
 import com.tvhelper.app.ui.common.TvCard
 import com.tvhelper.app.ui.theme.TvColors
@@ -84,7 +64,51 @@ import com.tvhelper.app.vm.TvViewModel
 private const val VIRTUAL_W = 1920f
 private const val VIRTUAL_H = 1080f
 
-@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+/**
+ * 遥控界面本地调色板：对标小米/Redmi 极简暗色遥控——纯黑画布、悬浮深灰面板、
+ * 中性灰圆形按键、唯一的红（电源/危险）与品牌蓝（播放键）点缀。明暗自适应。
+ */
+private data class RemotePalette(
+    val bg: Color,
+    val panel: Color,
+    val keyFill: Color,
+    val keyFillPressed: Color,
+    val keyGlyph: Color,
+    val okFill: Color,
+    val okGlyph: Color,
+    val label: Color,
+    val sub: Color,
+    val hairline: Color,
+)
+
+@Composable
+private fun remotePalette(): RemotePalette {
+    val dark = isSystemInDarkTheme()
+    return if (dark) RemotePalette(
+        bg = Color(0xFF000000),
+        panel = Color(0xFF161618),
+        keyFill = Color(0xFF2A2A2E),
+        keyFillPressed = Color(0xFF3C3C42),
+        keyGlyph = Color(0xFFD8D8DC),
+        okFill = Color(0xFF3C3C42),
+        okGlyph = Color(0xFFF4F4F6),
+        label = Color(0xFF8A8A90),
+        sub = Color(0xFF5A5A60),
+        hairline = Color(0xFF3A3A40),
+    ) else RemotePalette(
+        bg = Color(0xFFF1F1F4),
+        panel = Color(0xFFFFFFFF),
+        keyFill = Color(0xFFE4E4E9),
+        keyFillPressed = Color(0xFFD2D2D8),
+        keyGlyph = Color(0xFF2A2A2E),
+        okFill = Color(0xFFD2D2D8),
+        okGlyph = Color(0xFF161618),
+        label = Color(0xFF6A6A70),
+        sub = Color(0xFF9A9AA0),
+        hairline = Color(0xFFD8D8DD),
+    )
+}
+
 @Composable
 fun RemoteScreen(vm: TvViewModel, onGoConnect: () -> Unit = {}) {
     val connection by vm.connection.collectAsState()
@@ -92,201 +116,81 @@ fun RemoteScreen(vm: TvViewModel, onGoConnect: () -> Unit = {}) {
     val tvVolumeMax by vm.tvVolumeMax.collectAsState()
     val tvMuted by vm.tvMuted.collectAsState()
     val connected = connection.isConnected
+    val palette = remotePalette()
     var trackpadMode by remember { mutableStateOf(false) }
 
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background),
-        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 28.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+            .background(palette.bg),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        item { RemoteHeader(connection) }
+        item { RemoteHeader(connection, palette) }
 
-        // 未连接：整页控件禁用前先给出路（Material 空状态行动指引）
+        // 未连接：整页控件禁用前先给出行动指引
         if (!connected) {
             item {
-                Button(
-                    onClick = onGoConnect,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 48.dp),
-                ) { Text("去连接电视") }
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    color = palette.panel,
+                ) {
+                    Button(
+                        onClick = onGoConnect,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                    ) { Text("去连接电视") }
+                }
             }
         }
 
+        // 主控面板：一块悬浮深灰面板，承载全部遥控控件（对标参考图的整体卡片）
         item {
-            // 单选切换用平台组件：语义与无障碍优于手搓胶囊
-            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                SegmentedButton(
-                    selected = !trackpadMode,
-                    onClick = { trackpadMode = false },
-                    shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
-                ) { Text("按键") }
-                SegmentedButton(
-                    selected = trackpadMode,
-                    onClick = { trackpadMode = true },
-                    shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
-                ) { Text("触控板") }
-            }
-        }
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(28.dp),
+                color = palette.panel,
+            ) {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(22.dp),
+                ) {
+                    // 模式切换：按键 / 触控板（极简胶囊）
+                    ModeToggle(
+                        trackpadMode = trackpadMode,
+                        onKey = { trackpadMode = false },
+                        onPad = { trackpadMode = true },
+                        palette = palette,
+                    )
 
-        if (trackpadMode) {
-            item {
-                TvCard {
-                    Column {
-                        Text(
-                            "在下方区域滑动 = 直接向电视注入触摸（绝对坐标映射 1920×1080）。部分固件不开放触摸注入，属正常现象。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Spacer(Modifier.height(12.dp))
-                        Trackpad(enabled = connected, vm = vm)
-                    }
-                }
-            }
-        } else {
-            // 卡片顺序按使用频率：方向键 → 功能键（含音量/静音）→ 播放控制
-            item {
-                TvCard {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        SectionTitle("方向键")
-                        Spacer(Modifier.height(6.dp))
-                        DPad(vm = vm, enabled = connected)
-                    }
-                }
-            }
+                    // 快捷行：电源 / 静音 / 音量减 / 音量加（四枚等距中性圆钮）
+                    QuickRow(vm = vm, enabled = connected, palette = palette)
 
-            item {
-                TvCard {
-                    Column {
-                        SectionTitle("功能键与音量")
-                        Spacer(Modifier.height(10.dp))
-                        // 按钮和标签包在同一 Column，保证每个标签严格居中于自己的按钮下方
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceEvenly,
-                        ) {
-                            LabeledKey("返回", enabled = connected, onPress = { vm.sendKey(TvKey.BACK) }) {
-                                Icon(Icons.Default.KeyboardArrowLeft, "返回")
-                            }
-                            LabeledKey("主页", enabled = connected, onPress = { vm.sendKey(TvKey.HOME) }) {
-                                Icon(Icons.Default.Home, "主页")
-                            }
-                            LabeledKey("菜单", enabled = connected, onPress = { vm.sendKey(TvKey.MENU) }) {
-                                Icon(Icons.Default.Menu, "菜单")
-                            }
-                            PowerButton(vm = vm, enabled = connected)
-                        }
-                        // 音量排：当前音量值显示在减/加之间；静音=红色态
-                        Spacer(Modifier.height(16.dp))
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceEvenly,
-                        ) {
-                            LabeledKey("音量减", enabled = connected, onPress = { vm.adjustVolume(up = false) }) {
-                                Text("−", style = MaterialTheme.typography.headlineSmall)
-                            }
-                            // 当前音量：数字在上、横杆分隔、最大值在下；未获取时只显示横杆；
-                            // 整块与音量按钮同高（62dp）垂直居中
-                            Box(
-                                Modifier.height(62.dp),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                if (tvVolume != null) {
-                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                        Text(
-                                            tvVolume.toString(),
-                                            style = MaterialTheme.typography.titleLarge,
-                                            fontWeight = FontWeight.Bold,
-                                            color = MaterialTheme.colorScheme.onSurface,
-                                        )
-                                        Box(
-                                            Modifier
-                                                .width(26.dp)
-                                                .height(1.5.dp)
-                                                .clip(RoundedCornerShape(1.dp))
-                                                .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)),
-                                        )
-                                        Text(
-                                            tvVolumeMax.toString(),
-                                            style = MaterialTheme.typography.labelMedium,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
-                                    }
-                                } else {
-                                    // 未获取到音量：横杆占位
-                                    Box(
-                                        Modifier
-                                            .width(26.dp)
-                                            .height(2.dp)
-                                            .clip(RoundedCornerShape(1.dp))
-                                            .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)),
-                                    )
-                                }
-                            }
-                            LabeledKey("音量加", enabled = connected, onPress = { vm.adjustVolume(up = true) }) {
-                                Text("＋", style = MaterialTheme.typography.headlineSmall)
-                            }
-                            LabeledKey(
-                                label = "静音",
-                                enabled = connected,
-                                onPress = { vm.toggleMute() },
-                                container = if (tvMuted == true) TvColors.danger.copy(alpha = 0.16f)
-                                    else MaterialTheme.colorScheme.surfaceVariant,
-                                contentColor = if (tvMuted == true) TvColors.danger
-                                    else MaterialTheme.colorScheme.onSurfaceVariant,
-                                borderColor = if (tvMuted == true) TvColors.danger.copy(alpha = 0.4f) else null,
-                            ) {
-                                MuteIcon(muted = tvMuted == true, modifier = Modifier.size(24.dp))
-                            }
-                        }
-                    }
-                }
-            }
+                    // 音量条：细线 + 圆点滑块，两端显示当前/最大（对标参考图进度条语言）
+                    VolumeBar(
+                        vol = tvVolume,
+                        max = tvVolumeMax,
+                        muted = tvMuted,
+                        enabled = connected,
+                        palette = palette,
+                    )
 
-            item {
-                TvCard {
-                    Column {
-                        SectionTitle("播放控制")
-                        Spacer(Modifier.height(6.dp))
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceEvenly,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            RoundButton(
-                                onPress = { vm.sendKey(TvKey.MEDIA_PREVIOUS) },
-                                enabled = connected,
-                                borderColor = MaterialTheme.colorScheme.outline,
-                            ) { Text("上一集", style = MaterialTheme.typography.labelSmall) }
-                            RoundButton(
-                                onPress = { vm.sendKey(TvKey.MEDIA_PLAY_PAUSE) },
-                                enabled = connected,
-                                size = 72,
-                                container = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
-                                contentColor = MaterialTheme.colorScheme.primary,
-                            ) { Icon(Icons.Default.PlayArrow, "播放暂停", modifier = Modifier.size(30.dp)) }
-                            RoundButton(
-                                onPress = { vm.sendKey(TvKey.MEDIA_NEXT) },
-                                enabled = connected,
-                                borderColor = MaterialTheme.colorScheme.outline,
-                            ) { Text("下一集", style = MaterialTheme.typography.labelSmall) }
-                        }
-                        // 原「其他」卡并入：同一语义的上一曲/下一曲已由上方按键覆盖，只留增量键
-                        Spacer(Modifier.height(8.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            PillButton("快退", onClick = { vm.sendKey(TvKey.MEDIA_REWIND) }, enabled = connected)
-                            PillButton("快进", onClick = { vm.sendKey(TvKey.MEDIA_FAST_FORWARD) }, enabled = connected)
-                            PillButton("设置", onClick = { vm.sendKey(TvKey.SETTINGS) }, enabled = connected)
-                        }
-                        Spacer(Modifier.height(8.dp))
-                        Text(
-                            "方向键支持长按连发；音量键单击一次 ±1（长按无连发）。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                    if (trackpadMode) {
+                        Trackpad(enabled = connected, vm = vm, palette = palette)
+                    } else {
+                        DPad(vm = vm, enabled = connected, palette = palette)
                     }
+
+                    // 底部键行：主页（圆）· 返回（宽胶囊）· 菜单（圆）
+                    BottomRow(vm = vm, enabled = connected, palette = palette)
+
+                    // 播放控制：上一集 / 播放暂停 / 下一集
+                    PlaybackRow(vm = vm, enabled = connected, palette = palette)
                 }
             }
         }
@@ -294,72 +198,324 @@ fun RemoteScreen(vm: TvViewModel, onGoConnect: () -> Unit = {}) {
 }
 
 @Composable
-private fun RemoteHeader(connection: ConnectionState) {
-    TvCard {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            StatusDot(connection.isConnected)
-            Spacer(Modifier.width(8.dp))
-            Text(
-                connection.device?.displayName ?: "未连接",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.weight(1f),
-            )
+private fun RemoteHeader(connection: ConnectionState, palette: RemotePalette) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+    ) {
+        StatusDot(connection.isConnected)
+        Spacer(Modifier.width(8.dp))
+        Text(
+            connection.device?.displayName ?: "未连接",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = if (connection.isConnected) palette.okGlyph else palette.label,
+            modifier = Modifier.weight(1f),
+        )
+        // 连接状态胶囊：在线绿 / 离线灰
+        val chipBg = if (connection.isConnected) TvColors.online else palette.keyFill
+        val chipFg = if (connection.isConnected) Color.White else palette.label
+        Box(
+            Modifier
+                .clip(RoundedCornerShape(50))
+                .background(chipBg.copy(alpha = if (connection.isConnected) 1f else 0.6f))
+                .padding(horizontal = 10.dp, vertical = 4.dp),
+        ) {
             Text(
                 if (connection.isConnected) "已连接" else "离线",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.labelSmall,
+                color = chipFg,
+                fontWeight = FontWeight.Medium,
             )
         }
     }
 }
 
 @Composable
-private fun DPad(vm: TvViewModel, enabled: Boolean) {
-    val key = MaterialTheme.colorScheme.surfaceVariant
-    val fg = MaterialTheme.colorScheme.onSurfaceVariant
-
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        RepeatKeyButton(vm, TvKey.DPAD_UP, enabled, container = key, contentColor = fg) {
-            Icon(Icons.Default.KeyboardArrowUp, "上", modifier = Modifier.size(30.dp))
-        }
-        Spacer(Modifier.height(10.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            RepeatKeyButton(vm, TvKey.DPAD_LEFT, enabled, container = key, contentColor = fg) {
-                Icon(Icons.Default.KeyboardArrowLeft, "左", modifier = Modifier.size(30.dp))
-            }
-            Spacer(Modifier.width(10.dp))
-            RoundButton(
-                onPress = { vm.sendKey(TvKey.DPAD_CENTER) },
-                enabled = enabled,
-                size = 78,
-                container = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f),
-                contentColor = MaterialTheme.colorScheme.primary,
-                borderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.45f),
-            ) {
-                Text("OK", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            }
-            Spacer(Modifier.width(10.dp))
-            RepeatKeyButton(vm, TvKey.DPAD_RIGHT, enabled, container = key, contentColor = fg) {
-                Icon(Icons.Default.KeyboardArrowRight, "右", modifier = Modifier.size(30.dp))
-            }
-        }
-        Spacer(Modifier.height(10.dp))
-        RepeatKeyButton(vm, TvKey.DPAD_DOWN, enabled, container = key, contentColor = fg) {
-            Icon(Icons.Default.KeyboardArrowDown, "下", modifier = Modifier.size(30.dp))
+private fun ModeToggle(
+    trackpadMode: Boolean,
+    onKey: () -> Unit,
+    onPad: () -> Unit,
+    palette: RemotePalette,
+) {
+    Surface(
+        shape = RoundedCornerShape(50),
+        color = palette.keyFill.copy(alpha = 0.55f),
+    ) {
+        Row(
+            modifier = Modifier.padding(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            ModeChip("按键", selected = !trackpadMode, onClick = onKey, palette = palette)
+            ModeChip("触控板", selected = trackpadMode, onClick = onPad, palette = palette)
         }
     }
 }
 
+@Composable
+private fun ModeChip(text: String, selected: Boolean, onClick: () -> Unit, palette: RemotePalette) {
+    val bg = if (selected) palette.okFill else Color.Transparent
+    val fg = if (selected) palette.okGlyph else palette.label
+    Box(
+        Modifier
+            .clip(RoundedCornerShape(50))
+            .background(bg)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 20.dp, vertical = 7.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(text, style = MaterialTheme.typography.labelMedium, color = fg, fontWeight = FontWeight.Medium)
+    }
+}
 
-/** 支持长按连发的按键 */
+@Composable
+private fun QuickRow(vm: TvViewModel, enabled: Boolean, palette: RemotePalette) {
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceEvenly,
+    ) {
+        PowerButton(vm = vm, enabled = enabled, palette = palette)
+        LabeledKey(
+            label = "静音", enabled = enabled, palette = palette,
+            pressColor = palette.keyFillPressed,
+            onPress = { vm.toggleMute() },
+            contentColor = palette.keyGlyph,
+        ) { MuteIcon(muted = false, tint = palette.keyGlyph, modifier = Modifier.size(24.dp)) }
+        LabeledKey(
+            label = "音量−", enabled = enabled, palette = palette,
+            pressColor = palette.keyFillPressed,
+            onPress = { vm.adjustVolume(up = false) },
+            contentColor = palette.keyGlyph,
+        ) { Text("−", style = MaterialTheme.typography.headlineSmall, color = palette.keyGlyph) }
+        LabeledKey(
+            label = "音量＋", enabled = enabled, palette = palette,
+            pressColor = palette.keyFillPressed,
+            onPress = { vm.adjustVolume(up = true) },
+            contentColor = palette.keyGlyph,
+        ) { Text("＋", style = MaterialTheme.typography.headlineSmall, color = palette.keyGlyph) }
+    }
+}
+
+@Composable
+private fun VolumeBar(
+    vol: Int?,
+    max: Int?,
+    muted: Boolean?,
+    enabled: Boolean,
+    palette: RemotePalette,
+) {
+    var trackW by remember { mutableStateOf(1) }
+    val ratio = if (vol != null && max != null && max > 0) (vol.toFloat() / max).coerceIn(0f, 1f) else 0f
+    val thumbAlpha = if (enabled) 1f else 0.4f
+
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            vol?.toString() ?: "--",
+            style = MaterialTheme.typography.labelMedium,
+            color = palette.sub,
+            textAlign = TextAlign.End,
+            modifier = Modifier.width(30.dp),
+        )
+        Spacer(Modifier.width(12.dp))
+        Box(
+            Modifier
+                .weight(1f)
+                .height(36.dp)
+                .onSizeChanged { trackW = it.width },
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            // 轨道
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(palette.keyFill),
+            )
+            // 已填充
+            Box(
+                Modifier
+                    .width((trackW * ratio).dp)
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(palette.keyGlyph.copy(alpha = 0.45f * thumbAlpha)),
+            )
+            // 滑块圆点（对标参考图白色圆点）
+            Box(
+                Modifier
+                    .offset { IntOffset(((trackW - 12) * ratio).toInt(), 0) }
+                    .size(12.dp)
+                    .clip(CircleShape)
+                    .background((if (muted == true) TvColors.danger else palette.keyGlyph).copy(alpha = thumbAlpha)),
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Text(
+            max?.toString() ?: "--",
+            style = MaterialTheme.typography.labelMedium,
+            color = palette.sub,
+            modifier = Modifier.width(30.dp),
+        )
+    }
+}
+
+/**
+ * 方向键盘：对标参考图的大圆方向盘。
+ * - 外圈仅一道极淡描边，与面板融为一体；中央 OK 略亮；
+ * - 上/下/左/右以细微实心圆点表示（极简语言），各自仍是完整可点区域。
+ */
+@Composable
+private fun DPad(vm: TvViewModel, enabled: Boolean, palette: RemotePalette) {
+    Box(
+        Modifier
+            .size(268.dp)
+            .clip(CircleShape)
+            .background(palette.panel)
+            .border(1.dp, palette.hairline, CircleShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        // 上
+        Box(Modifier.align(Alignment.TopCenter).padding(top = 16.dp)) {
+            RepeatKeyButton(
+                vm, TvKey.DPAD_UP, enabled, palette,
+                container = Color.Transparent, contentColor = palette.keyGlyph,
+            ) { DotGlyph(palette) }
+        }
+        // 下
+        Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 16.dp)) {
+            RepeatKeyButton(
+                vm, TvKey.DPAD_DOWN, enabled, palette,
+                container = Color.Transparent, contentColor = palette.keyGlyph,
+            ) { DotGlyph(palette) }
+        }
+        // 左
+        Box(Modifier.align(Alignment.CenterStart).padding(start = 16.dp)) {
+            RepeatKeyButton(
+                vm, TvKey.DPAD_LEFT, enabled, palette,
+                container = Color.Transparent, contentColor = palette.keyGlyph,
+            ) { DotGlyph(palette) }
+        }
+        // 右
+        Box(Modifier.align(Alignment.CenterEnd).padding(end = 16.dp)) {
+            RepeatKeyButton(
+                vm, TvKey.DPAD_RIGHT, enabled, palette,
+                container = Color.Transparent, contentColor = palette.keyGlyph,
+            ) { DotGlyph(palette) }
+        }
+        // 中央 OK
+        RoundButton(
+            onPress = { vm.sendKey(TvKey.DPAD_CENTER) },
+            enabled = enabled,
+            size = 86,
+            container = palette.okFill,
+            contentColor = palette.okGlyph,
+            pressColor = palette.keyFillPressed,
+        ) {
+            Text("OK", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+@Composable
+private fun DotGlyph(palette: RemotePalette) {
+    Box(
+        Modifier
+            .size(7.dp)
+            .clip(CircleShape)
+            .background(palette.keyGlyph),
+    )
+}
+
+@Composable
+private fun BottomRow(vm: TvViewModel, enabled: Boolean, palette: RemotePalette) {
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        // 主页（圆）
+        RoundButton(
+            onPress = { vm.sendKey(TvKey.HOME) },
+            enabled = enabled,
+            size = 56,
+            container = palette.keyFill,
+            contentColor = palette.keyGlyph,
+            pressColor = palette.keyFillPressed,
+        ) { Icon(Icons.Default.Home, "主页", tint = palette.keyGlyph, modifier = Modifier.size(24.dp)) }
+        // 返回（宽胶囊，对标参考图长条返回键）
+        PillButton(
+            text = "返回",
+            onClick = { vm.sendKey(TvKey.BACK) },
+            enabled = enabled,
+            modifier = Modifier.weight(1f),
+        )
+        // 菜单（圆）
+        RoundButton(
+            onPress = { vm.sendKey(TvKey.MENU) },
+            enabled = enabled,
+            size = 56,
+            container = palette.keyFill,
+            contentColor = palette.keyGlyph,
+            pressColor = palette.keyFillPressed,
+        ) { Icon(Icons.Default.Menu, "菜单", tint = palette.keyGlyph, modifier = Modifier.size(24.dp)) }
+    }
+}
+
+@Composable
+private fun PlaybackRow(vm: TvViewModel, enabled: Boolean, palette: RemotePalette) {
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(18.dp, Alignment.CenterHorizontally),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RoundButton(
+            onPress = { vm.sendKey(TvKey.MEDIA_PREVIOUS) },
+            enabled = enabled,
+            size = 56,
+            container = palette.keyFill,
+            contentColor = palette.keyGlyph,
+            pressColor = palette.keyFillPressed,
+        ) { Text("上集", style = MaterialTheme.typography.labelSmall, color = palette.keyGlyph) }
+        RoundButton(
+            onPress = { vm.sendKey(TvKey.MEDIA_PLAY_PAUSE) },
+            enabled = enabled,
+            size = 72,
+            container = palette.keyFill,
+            contentColor = palette.keyGlyph,
+            pressColor = palette.keyFillPressed,
+        ) { Icon(Icons.Default.PlayArrow, "播放暂停", tint = palette.keyGlyph, modifier = Modifier.size(30.dp)) }
+        RoundButton(
+            onPress = { vm.sendKey(TvKey.MEDIA_NEXT) },
+            enabled = enabled,
+            size = 56,
+            container = palette.keyFill,
+            contentColor = palette.keyGlyph,
+            pressColor = palette.keyFillPressed,
+        ) { Text("下集", style = MaterialTheme.typography.labelSmall, color = palette.keyGlyph) }
+    }
+    Spacer(Modifier.height(4.dp))
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
+    ) {
+        PillButton("快退", onClick = { vm.sendKey(TvKey.MEDIA_REWIND) }, enabled = enabled)
+        PillButton("快进", onClick = { vm.sendKey(TvKey.MEDIA_FAST_FORWARD) }, enabled = enabled)
+        PillButton("设置", onClick = { vm.sendKey(TvKey.SETTINGS) }, enabled = enabled)
+    }
+}
+
+/** 支持长按连发的按键（中性按压态） */
 @Composable
 private fun RepeatKeyButton(
     vm: TvViewModel,
     keyCode: Int,
     enabled: Boolean,
-    container: androidx.compose.ui.graphics.Color,
-    contentColor: androidx.compose.ui.graphics.Color,
+    palette: RemotePalette,
+    container: Color,
+    contentColor: Color,
     content: @Composable () -> Unit,
 ) {
     RoundButton(
@@ -368,38 +524,39 @@ private fun RepeatKeyButton(
         enabled = enabled,
         container = container,
         contentColor = contentColor,
+        pressColor = palette.keyFillPressed,
         content = content,
     )
 }
 
-/** 圆形按键 + 下方文字标签：同一 Column 保证标签严格居中于按钮下方 */
+/** 圆形按键 + 下方细微文字标签 */
 @Composable
 private fun LabeledKey(
     label: String,
     enabled: Boolean,
+    palette: RemotePalette,
     onPress: () -> Unit,
-    labelColor: Color = MaterialTheme.colorScheme.onSurfaceVariant,
-    container: Color = MaterialTheme.colorScheme.surfaceVariant,
-    contentColor: Color = MaterialTheme.colorScheme.onSurfaceVariant,
-    borderColor: Color? = null,
+    pressColor: Color = MaterialTheme.colorScheme.primary,
+    contentColor: Color,
+    container: Color = palette.keyFill,
     content: @Composable () -> Unit,
 ) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         RoundButton(
             onPress = onPress,
             enabled = enabled,
-            size = 62,
+            size = 58,
             container = container,
             contentColor = contentColor,
-            borderColor = borderColor,
+            pressColor = pressColor,
         ) { content() }
         Spacer(Modifier.height(6.dp))
-        Text(label, style = MaterialTheme.typography.labelSmall, color = labelColor)
+        Text(label, style = MaterialTheme.typography.labelSmall, color = palette.label)
     }
 }
 
 @Composable
-private fun PowerButton(vm: TvViewModel, enabled: Boolean) {
+private fun PowerButton(vm: TvViewModel, enabled: Boolean, palette: RemotePalette) {
     // 电源是高代价操作（可能直接关电视）：按下抬起后弹确认框，防误触
     var confirmPower by remember { mutableStateOf(false) }
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -407,15 +564,16 @@ private fun PowerButton(vm: TvViewModel, enabled: Boolean) {
             onPress = {},
             onRelease = { confirmPower = true },
             enabled = enabled,
-            size = 62,
+            size = 58,
             container = TvColors.danger.copy(alpha = 0.16f),
             contentColor = TvColors.danger,
             borderColor = TvColors.danger.copy(alpha = 0.4f),
+            pressColor = TvColors.danger,
         ) {
             PowerIcon(tint = TvColors.danger, modifier = Modifier.size(26.dp))
         }
         Spacer(Modifier.height(6.dp))
-        Text("电源", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("电源", style = MaterialTheme.typography.labelSmall, color = palette.label)
     }
     if (confirmPower) {
         AlertDialog(
@@ -434,8 +592,7 @@ private fun PowerButton(vm: TvViewModel, enabled: Boolean) {
 
 /** 自绘静音图标：喇叭 + 声波（未静音）/ 喇叭 + 叉（已静音）。icons-core 无 Volume 系列，Canvas 自绘 */
 @Composable
-private fun MuteIcon(muted: Boolean, modifier: Modifier = Modifier) {
-    val tint = LocalContentColor.current
+private fun MuteIcon(muted: Boolean, tint: Color, modifier: Modifier = Modifier) {
     androidx.compose.foundation.Canvas(modifier = modifier) {
         val u = size.minDimension / 24f
         fun o(x: Float, y: Float) = androidx.compose.ui.geometry.Offset(x * u, y * u)
@@ -444,7 +601,6 @@ private fun MuteIcon(muted: Boolean, modifier: Modifier = Modifier) {
             cap = androidx.compose.ui.graphics.StrokeCap.Round,
             join = androidx.compose.ui.graphics.StrokeJoin.Round,
         )
-        // 喇叭本体（实心梯形+矩形）
         val body = androidx.compose.ui.graphics.Path().apply {
             moveTo(o(4f, 9.6f).x, o(4f, 9.6f).y)
             lineTo(o(7.5f, 9.6f).x, o(7.5f, 9.6f).y)
@@ -456,7 +612,6 @@ private fun MuteIcon(muted: Boolean, modifier: Modifier = Modifier) {
         }
         drawPath(body, tint)
         if (!muted) {
-            // 声波：两道右向弧线
             listOf(3.2f, 5.8f).forEach { r ->
                 drawArc(
                     color = tint,
@@ -469,7 +624,6 @@ private fun MuteIcon(muted: Boolean, modifier: Modifier = Modifier) {
                 )
             }
         } else {
-            // 叉：两道斜线
             drawLine(tint, o(15.2f, 9.4f), o(20.2f, 14.6f), strokeWidth = 1.9f * u, cap = androidx.compose.ui.graphics.StrokeCap.Round)
             drawLine(tint, o(20.2f, 9.4f), o(15.2f, 14.6f), strokeWidth = 1.9f * u, cap = androidx.compose.ui.graphics.StrokeCap.Round)
         }
@@ -478,7 +632,7 @@ private fun MuteIcon(muted: Boolean, modifier: Modifier = Modifier) {
 
 /** 自绘电源图标：顶部缺口圆环 + 竖线（icons-core 无 PowerSettingsNew） */
 @Composable
-private fun PowerIcon(tint: androidx.compose.ui.graphics.Color, modifier: Modifier = Modifier) {
+private fun PowerIcon(tint: Color, modifier: Modifier = Modifier) {
     androidx.compose.foundation.Canvas(modifier = modifier) {
         val stroke = size.minDimension * 0.115f
         val cx = size.width / 2f
@@ -487,7 +641,6 @@ private fun PowerIcon(tint: androidx.compose.ui.graphics.Color, modifier: Modifi
             width = stroke,
             cap = androidx.compose.ui.graphics.StrokeCap.Round,
         )
-        // 圆环：从顶部留出缺口（-50° 到 230°，缺口朝上）
         drawArc(
             color = tint,
             startAngle = -50f,
@@ -497,7 +650,6 @@ private fun PowerIcon(tint: androidx.compose.ui.graphics.Color, modifier: Modifi
             size = androidx.compose.ui.geometry.Size(r * 2f, r * 2f),
             style = arcStyle,
         )
-        // 竖线：从顶部中间向下到圆心上方
         drawLine(
             color = tint,
             start = androidx.compose.ui.geometry.Offset(cx, stroke * 0.4f),
@@ -513,7 +665,7 @@ private fun PowerIcon(tint: androidx.compose.ui.graphics.Color, modifier: Modifi
  * 走 RC type 6 SendTouch（MotionEvent 全量序列化）。
  */
 @Composable
-private fun Trackpad(enabled: Boolean, vm: TvViewModel) {
+private fun Trackpad(enabled: Boolean, vm: TvViewModel, palette: RemotePalette) {
     var boxSize by remember { mutableStateOf(Offset(1f, 1f)) }
     var downTime by remember { mutableStateOf(0L) }
 
@@ -525,7 +677,7 @@ private fun Trackpad(enabled: Boolean, vm: TvViewModel) {
             .fillMaxWidth()
             .aspectRatio(16f / 9f)
             .clip(RoundedCornerShape(16.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .background(palette.keyFill)
             .onSizeChanged { boxSize = Offset(it.width.toFloat(), it.height.toFloat()) }
             .pointerInput(enabled) {
                 if (!enabled) return@pointerInput
@@ -569,13 +721,13 @@ private fun Trackpad(enabled: Boolean, vm: TvViewModel) {
                 Modifier
                     .size(8.dp)
                     .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.6f))
+                    .background(palette.keyGlyph.copy(alpha = 0.6f))
             )
             Spacer(Modifier.height(8.dp))
             Text(
                 if (enabled) "在此滑动以操控电视" else "未连接",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = palette.label,
             )
         }
     }
