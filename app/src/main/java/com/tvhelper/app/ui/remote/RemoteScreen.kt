@@ -271,15 +271,29 @@ private fun ModeChip(text: String, selected: Boolean, onClick: () -> Unit, palet
 @Composable
 private fun QuickRow(vm: TvViewModel, enabled: Boolean, muted: Boolean?, palette: RemotePalette) {
     val muteActive = muted == true
-    val muteContainer = if (muteActive) TvColors.danger.copy(alpha = 0.18f) else palette.keyFill
-    val muteContent = if (muteActive) TvColors.danger else palette.keyGlyph
+    val muteUnknown = muted == null
+    val muteContainer = when {
+        muteActive -> TvColors.danger.copy(alpha = 0.18f)
+        muteUnknown -> palette.keyFill.copy(alpha = 0.45f)
+        else -> palette.keyFill
+    }
+    val muteContent = when {
+        muteActive -> TvColors.danger
+        muteUnknown -> palette.keyGlyph.copy(alpha = 0.5f)
+        else -> palette.keyGlyph
+    }
+    val muteLabel = when {
+        muteActive -> "已静音"
+        muteUnknown -> "静音?"
+        else -> "静音"
+    }
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceEvenly,
     ) {
         PowerButton(vm = vm, enabled = enabled, palette = palette)
         LabeledKey(
-            label = if (muteActive) "已静音" else "静音", enabled = enabled, palette = palette,
+            label = muteLabel, enabled = enabled, palette = palette,
             container = muteContainer,
             contentColor = muteContent,
             pressColor = if (muteActive) TvColors.danger else palette.keyFillPressed,
