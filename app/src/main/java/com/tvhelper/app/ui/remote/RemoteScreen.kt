@@ -169,7 +169,7 @@ fun RemoteScreen(vm: TvViewModel, onGoConnect: () -> Unit = {}) {
                     )
 
                     // 快捷行：电源 / 静音 / 音量减 / 音量加（四枚等距中性圆钮）
-                    QuickRow(vm = vm, enabled = connected, palette = palette)
+                    QuickRow(vm = vm, enabled = connected, muted = tvMuted, palette = palette)
 
                     // 音量条：细线 + 圆点滑块，两端显示当前/最大（对标参考图进度条语言）
                     VolumeBar(
@@ -269,18 +269,22 @@ private fun ModeChip(text: String, selected: Boolean, onClick: () -> Unit, palet
 }
 
 @Composable
-private fun QuickRow(vm: TvViewModel, enabled: Boolean, palette: RemotePalette) {
+private fun QuickRow(vm: TvViewModel, enabled: Boolean, muted: Boolean?, palette: RemotePalette) {
+    val muteActive = muted == true
+    val muteContainer = if (muteActive) TvColors.danger.copy(alpha = 0.18f) else palette.keyFill
+    val muteContent = if (muteActive) TvColors.danger else palette.keyGlyph
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceEvenly,
     ) {
         PowerButton(vm = vm, enabled = enabled, palette = palette)
         LabeledKey(
-            label = "静音", enabled = enabled, palette = palette,
-            pressColor = palette.keyFillPressed,
+            label = if (muteActive) "已静音" else "静音", enabled = enabled, palette = palette,
+            container = muteContainer,
+            contentColor = muteContent,
+            pressColor = if (muteActive) TvColors.danger else palette.keyFillPressed,
             onPress = { vm.toggleMute() },
-            contentColor = palette.keyGlyph,
-        ) { MuteIcon(muted = false, tint = palette.keyGlyph, modifier = Modifier.size(24.dp)) }
+        ) { MuteIcon(muted = muteActive, tint = muteContent, modifier = Modifier.size(24.dp)) }
         LabeledKey(
             label = "音量−", enabled = enabled, palette = palette,
             pressColor = palette.keyFillPressed,
@@ -363,53 +367,53 @@ private fun VolumeBar(
 }
 
 /**
- * 方向键盘：对标参考图的大圆方向盘。
+ * 方向键盘：对标参考图的大圆方向盘，但方向键放大为带方向箭头的完整热区。
  * - 外圈仅一道极淡描边，与面板融为一体；中央 OK 略亮；
- * - 上/下/左/右以细微实心圆点表示（极简语言），各自仍是完整可点区域。
+ * - 上/下/左/右为放大的圆形热区 + 自绘方向箭头（清晰且易点），各自仍是完整可点区域。
  */
 @Composable
 private fun DPad(vm: TvViewModel, enabled: Boolean, palette: RemotePalette) {
     Box(
         Modifier
-            .size(268.dp)
+            .size(300.dp)
             .clip(CircleShape)
             .background(palette.panel)
             .border(1.dp, palette.hairline, CircleShape),
         contentAlignment = Alignment.Center,
     ) {
         // 上
-        Box(Modifier.align(Alignment.TopCenter).padding(top = 16.dp)) {
+        Box(Modifier.align(Alignment.TopCenter).padding(top = 18.dp)) {
             RepeatKeyButton(
-                vm, TvKey.DPAD_UP, enabled, palette,
+                vm, TvKey.DPAD_UP, enabled, palette, size = 74,
                 container = Color.Transparent, contentColor = palette.keyGlyph,
-            ) { DotGlyph(palette) }
+            ) { ArrowGlyph(Direction.UP, palette.keyGlyph, Modifier.size(26.dp)) }
         }
         // 下
-        Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 16.dp)) {
+        Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 18.dp)) {
             RepeatKeyButton(
-                vm, TvKey.DPAD_DOWN, enabled, palette,
+                vm, TvKey.DPAD_DOWN, enabled, palette, size = 74,
                 container = Color.Transparent, contentColor = palette.keyGlyph,
-            ) { DotGlyph(palette) }
+            ) { ArrowGlyph(Direction.DOWN, palette.keyGlyph, Modifier.size(26.dp)) }
         }
         // 左
-        Box(Modifier.align(Alignment.CenterStart).padding(start = 16.dp)) {
+        Box(Modifier.align(Alignment.CenterStart).padding(start = 18.dp)) {
             RepeatKeyButton(
-                vm, TvKey.DPAD_LEFT, enabled, palette,
+                vm, TvKey.DPAD_LEFT, enabled, palette, size = 74,
                 container = Color.Transparent, contentColor = palette.keyGlyph,
-            ) { DotGlyph(palette) }
+            ) { ArrowGlyph(Direction.LEFT, palette.keyGlyph, Modifier.size(26.dp)) }
         }
         // 右
-        Box(Modifier.align(Alignment.CenterEnd).padding(end = 16.dp)) {
+        Box(Modifier.align(Alignment.CenterEnd).padding(end = 18.dp)) {
             RepeatKeyButton(
-                vm, TvKey.DPAD_RIGHT, enabled, palette,
+                vm, TvKey.DPAD_RIGHT, enabled, palette, size = 74,
                 container = Color.Transparent, contentColor = palette.keyGlyph,
-            ) { DotGlyph(palette) }
+            ) { ArrowGlyph(Direction.RIGHT, palette.keyGlyph, Modifier.size(26.dp)) }
         }
         // 中央 OK
         RoundButton(
             onPress = { vm.sendKey(TvKey.DPAD_CENTER) },
             enabled = enabled,
-            size = 86,
+            size = 96,
             container = palette.okFill,
             contentColor = palette.okGlyph,
             pressColor = palette.keyFillPressed,
@@ -419,14 +423,25 @@ private fun DPad(vm: TvViewModel, enabled: Boolean, palette: RemotePalette) {
     }
 }
 
+private enum class Direction { UP, DOWN, LEFT, RIGHT }
+
+/** 自绘方向箭头（三角形）：icons-core 无 Navigation 箭头系列，Canvas 自绘，可随方向键放大 */
 @Composable
-private fun DotGlyph(palette: RemotePalette) {
-    Box(
-        Modifier
-            .size(7.dp)
-            .clip(CircleShape)
-            .background(palette.keyGlyph),
-    )
+private fun ArrowGlyph(direction: Direction, tint: Color, modifier: Modifier = Modifier) {
+    androidx.compose.foundation.Canvas(modifier = modifier) {
+        val cx = size.width / 2f
+        val cy = size.height / 2f
+        val s = size.minDimension
+        val p = androidx.compose.ui.graphics.Path()
+        when (direction) {
+            Direction.UP -> { p.moveTo(cx, cy - s * 0.34f); p.lineTo(cx - s * 0.32f, cy + s * 0.20f); p.lineTo(cx + s * 0.32f, cy + s * 0.20f) }
+            Direction.DOWN -> { p.moveTo(cx, cy + s * 0.34f); p.lineTo(cx - s * 0.32f, cy - s * 0.20f); p.lineTo(cx + s * 0.32f, cy - s * 0.20f) }
+            Direction.LEFT -> { p.moveTo(cx - s * 0.34f, cy); p.lineTo(cx + s * 0.20f, cy - s * 0.32f); p.lineTo(cx + s * 0.20f, cy + s * 0.32f) }
+            Direction.RIGHT -> { p.moveTo(cx + s * 0.34f, cy); p.lineTo(cx - s * 0.20f, cy - s * 0.32f); p.lineTo(cx - s * 0.20f, cy + s * 0.32f) }
+        }
+        p.close()
+        drawPath(p, tint)
+    }
 }
 
 @Composable
@@ -514,6 +529,7 @@ private fun RepeatKeyButton(
     keyCode: Int,
     enabled: Boolean,
     palette: RemotePalette,
+    size: Int = 62,
     container: Color,
     contentColor: Color,
     content: @Composable () -> Unit,
@@ -522,6 +538,7 @@ private fun RepeatKeyButton(
         onPress = { vm.startKeyRepeat(keyCode) },
         onRelease = { vm.stopKeyRepeat() },
         enabled = enabled,
+        size = size,
         container = container,
         contentColor = contentColor,
         pressColor = palette.keyFillPressed,
