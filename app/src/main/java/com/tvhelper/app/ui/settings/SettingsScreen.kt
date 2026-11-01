@@ -120,6 +120,8 @@ fun SettingsScreen(vm: TvViewModel) {
         TvCard {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 SettingRow("版本", BuildConfig.VERSION_NAME)
+                SettingRow("VersionCode", BuildConfig.VERSION_CODE.toString())
+                SettingRow("构建时间", BuildConfig.BUILD_TIME)
                 SettingRow("协议", "AirKan / milink UDT（加密通道）")
                 SettingRow("支持设备", "小米 / 红米 MIUI TV")
                 LogRow()

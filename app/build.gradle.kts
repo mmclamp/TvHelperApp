@@ -1,3 +1,5 @@
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
 import java.util.Properties
 
 plugins {
@@ -11,6 +13,9 @@ val keystoreProps = Properties().apply {
     if (f.exists()) f.inputStream().use { load(it) }
 }
 
+// 构建时间：注入 BuildConfig，供设置页"关于"展示（每次构建刷新）
+val buildTime = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
+
 android {
     namespace = "com.tvhelper.app"
     compileSdk = 34
@@ -19,8 +24,9 @@ android {
         applicationId = "com.tvhelper.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 43
-        versionName = "1.8.17"
+        versionCode = 44
+        versionName = "1.8.18"
+        buildConfigField("String", "BUILD_TIME", "\"$buildTime\"")
         vectorDrawables { useSupportLibrary = true }
     }
 
