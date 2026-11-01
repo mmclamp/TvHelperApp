@@ -134,8 +134,8 @@ fun RemoteScreen(vm: TvViewModel, onGoConnect: () -> Unit = {}) {
         modifier = Modifier
             .fillMaxSize()
             .background(palette.bg),
-        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 28.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         item { RemoteHeader(connection, palette) }
 
@@ -167,9 +167,9 @@ fun RemoteScreen(vm: TvViewModel, onGoConnect: () -> Unit = {}) {
                 Column(
                     Modifier
                         .fillMaxWidth()
-                        .padding(20.dp),
+                        .padding(16.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(22.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
                     // 模式切换：按键 / 触控板（极简胶囊）
                     ModeToggle(
@@ -414,45 +414,45 @@ private fun VolumeBar(
 private fun DPad(vm: TvViewModel, enabled: Boolean, palette: RemotePalette) {
     Box(
         Modifier
-            .size(300.dp)
+            .size(256.dp)
             .clip(CircleShape)
             .background(palette.panel)
             .border(1.dp, palette.hairline, CircleShape),
         contentAlignment = Alignment.Center,
     ) {
         // 上
-        Box(Modifier.align(Alignment.TopCenter).padding(top = 18.dp)) {
+        Box(Modifier.align(Alignment.TopCenter).padding(top = 12.dp)) {
             RepeatKeyButton(
-                vm, TvKey.DPAD_UP, enabled, palette, size = 74,
+                vm, TvKey.DPAD_UP, enabled, palette, size = 62,
                 container = Color.Transparent, contentColor = palette.keyGlyph,
-            ) { ArrowGlyph(Direction.UP, palette.keyGlyph, Modifier.size(26.dp)) }
+            ) { ArrowGlyph(Direction.UP, palette.keyGlyph, Modifier.size(22.dp)) }
         }
         // 下
-        Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 18.dp)) {
+        Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp)) {
             RepeatKeyButton(
-                vm, TvKey.DPAD_DOWN, enabled, palette, size = 74,
+                vm, TvKey.DPAD_DOWN, enabled, palette, size = 62,
                 container = Color.Transparent, contentColor = palette.keyGlyph,
-            ) { ArrowGlyph(Direction.DOWN, palette.keyGlyph, Modifier.size(26.dp)) }
+            ) { ArrowGlyph(Direction.DOWN, palette.keyGlyph, Modifier.size(22.dp)) }
         }
         // 左
-        Box(Modifier.align(Alignment.CenterStart).padding(start = 18.dp)) {
+        Box(Modifier.align(Alignment.CenterStart).padding(start = 12.dp)) {
             RepeatKeyButton(
-                vm, TvKey.DPAD_LEFT, enabled, palette, size = 74,
+                vm, TvKey.DPAD_LEFT, enabled, palette, size = 62,
                 container = Color.Transparent, contentColor = palette.keyGlyph,
-            ) { ArrowGlyph(Direction.LEFT, palette.keyGlyph, Modifier.size(26.dp)) }
+            ) { ArrowGlyph(Direction.LEFT, palette.keyGlyph, Modifier.size(22.dp)) }
         }
         // 右
-        Box(Modifier.align(Alignment.CenterEnd).padding(end = 18.dp)) {
+        Box(Modifier.align(Alignment.CenterEnd).padding(end = 12.dp)) {
             RepeatKeyButton(
-                vm, TvKey.DPAD_RIGHT, enabled, palette, size = 74,
+                vm, TvKey.DPAD_RIGHT, enabled, palette, size = 62,
                 container = Color.Transparent, contentColor = palette.keyGlyph,
-            ) { ArrowGlyph(Direction.RIGHT, palette.keyGlyph, Modifier.size(26.dp)) }
+            ) { ArrowGlyph(Direction.RIGHT, palette.keyGlyph, Modifier.size(22.dp)) }
         }
         // 中央 OK
         RoundButton(
             onPress = { vm.sendKey(TvKey.DPAD_CENTER) },
             enabled = enabled,
-            size = 96,
+            size = 82,
             container = palette.okFill,
             contentColor = palette.okGlyph,
             pressColor = palette.keyFillPressed,
@@ -488,7 +488,7 @@ private fun BottomRow(vm: TvViewModel, enabled: Boolean, palette: RemotePalette)
     Row(
         Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(14.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         // 主页（圆）
         RoundButton(
@@ -522,7 +522,7 @@ private fun BottomRow(vm: TvViewModel, enabled: Boolean, palette: RemotePalette)
 private fun PlaybackRow(vm: TvViewModel, enabled: Boolean, palette: RemotePalette) {
     Row(
         Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(18.dp, Alignment.CenterHorizontally),
+        horizontalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         RoundButton(
@@ -550,7 +550,6 @@ private fun PlaybackRow(vm: TvViewModel, enabled: Boolean, palette: RemotePalett
             pressColor = palette.keyFillPressed,
         ) { Text("下集", style = MaterialTheme.typography.labelSmall, color = palette.keyGlyph) }
     }
-    Spacer(Modifier.height(4.dp))
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
@@ -606,7 +605,7 @@ private fun LabeledKey(
             contentColor = contentColor,
             pressColor = pressColor,
         ) { content() }
-        Spacer(Modifier.height(6.dp))
+        Spacer(Modifier.height(4.dp))
         Text(label, style = MaterialTheme.typography.labelSmall, color = palette.label)
     }
 }
@@ -671,7 +670,7 @@ private fun PowerButton(
         ) {
             PowerIcon(tint = iconTint, modifier = Modifier.size(26.dp))
         }
-        Spacer(Modifier.height(6.dp))
+        Spacer(Modifier.height(4.dp))
         Text(label, style = MaterialTheme.typography.labelSmall, color = palette.label)
     }
 
