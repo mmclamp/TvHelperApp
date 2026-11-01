@@ -79,7 +79,23 @@ class TvApi(private val udt: UdtClient) {
         udt.call(UdtMethods.setVolume(volume, nextId()), UdtMethods.TIMEOUT_DEFAULT),
     )
 
-    // 注：Social setMute/getMute 电视实测反射不支持（无效），静音走 RC MUTE 键，见 TvRepository
+    /**
+     * 查询电视静音状态（UDT SocialRequest.getMute）。
+     * 返回 true=已静音 / false=未静音；解析失败（部分固件无此方法）返回 null，
+     * 由上层降级为本地跟踪。响应容错：isMute/mute/muted 任一字段为真即视为静音。
+     */
+    suspend fun getMute(): Boolean? {
+        val msg = udt.call(UdtMethods.getMute(nextId()), UdtMethods.TIMEOUT_DEFAULT)
+        val r = msg.result ?: return null
+        Log.d(TAG, "mute resp status=${msg.status} result=$r")
+        val m = when {
+            r.has("isMute") -> r.optBoolean("isMute", false)
+            r.has("mute") -> r.optBoolean("mute", false)
+            r.has("muted") -> r.optBoolean("muted", false)
+            else -> return null
+        }
+        return m
+    }
 
     private fun volumeFrom(msg: UdtCodec.Message): Pair<Int, Int>? {
         val ok = msg.status

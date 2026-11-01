@@ -114,9 +114,9 @@ class TvRepository(
     private val _tvVolumeMax = MutableStateFlow(100)
     val tvVolumeMax: StateFlow<Int> = _tvVolumeMax
 
-    /** 电视静音状态：RC MUTE 键切换后本地跟踪；调音量会自动解除静音（电视行为）→ 回填 false */
-    private val _tvMuted = MutableStateFlow(false)
-    val tvMuted: StateFlow<Boolean> = _tvMuted
+    /** 电视静音状态：连接时经 getMute 查询真实态（三态 Boolean?，null=未知）；RC MUTE 键切换本地跟踪；调音量自动解除静音 → 回填 false */
+    private val _tvMuted = MutableStateFlow<Boolean?>(null)
+    val tvMuted: StateFlow<Boolean?> = _tvMuted
 
     private val _notices = MutableSharedFlow<Notice>(extraBufferCapacity = 32)
     val notices: SharedFlow<Notice> = _notices
@@ -390,6 +390,7 @@ class TvRepository(
                 socialApi = TvApi(social)
                 Log.i(TAG, "Social 9093 已就绪")
                 queryVolume()
+                queryMute()
             }
         }
 
@@ -705,7 +706,7 @@ class TvRepository(
         socialUdt = null
         socialApi = null
         _tvVolume.value = null
-        _tvMuted.value = false
+        _tvMuted.value = null
         _installedApps.value = emptyList()
     }
 
@@ -760,7 +761,7 @@ class TvRepository(
     suspend fun toggleMuteKey(): Boolean {
         val ok = sendKey(TvKey.MUTE)
         if (ok) {
-            _tvMuted.value = !(_tvMuted.value)
+            _tvMuted.value = !(_tvMuted.value ?: false)
             Log.i(TAG, "静音切换 → ${_tvMuted.value}")
         }
         return ok
@@ -817,6 +818,25 @@ class TvRepository(
                 } else {
                     Log.w(TAG, "音量查询无结果（方法可能不受支持）")
                 }
+            }
+        }
+    }
+
+    /** 查询电视当前静音状态（Social 9093 通道 getMute，部分固件支持）。
+     *  结果写入 _tvMuted（true/false）；不支持（返回空）时保持 null 降级本地跟踪。 */
+    fun queryMute() {
+        val a = socialApi ?: api ?: return
+        scope.launch {
+            try {
+                val m = withContext(NonCancellable) { a.getMute() }
+                if (m != null) {
+                    _tvMuted.value = m
+                    Log.i(TAG, "电视静音状态：$m")
+                } else {
+                    Log.w(TAG, "静音查询无结果（方法可能不受支持），保持本地/未知状态")
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "静音查询失败：${t.message}")
             }
         }
     }
