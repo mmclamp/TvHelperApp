@@ -9,6 +9,7 @@ import android.util.Log
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.withTimeoutOrNull
 import java.net.Inet4Address
 
 /** 发现的电视设备 */
@@ -158,6 +159,7 @@ class MdnsDiscovery(private val context: Context) {
                                     if (v == null) null else k to String(v, Charsets.UTF_8)
                                 }
                                 .toMap()
+                            Log.i(TAG, "resolved ${si.serviceName} ip=$ip keys=${attrs.keys} btmac=${attrs["btmac"]} wol=${attrs["wol"]} mac=${attrs["mac"]}")
                             val port = si.port.takeIf { it > 0 } ?: 0
                             val isRc = si.serviceType?.contains("_rc.") == true
                             // milink 服务会把真实 TCP 端口写在 TXT 里（tcp=6093），比 SRV 更权威
@@ -201,6 +203,21 @@ class MdnsDiscovery(private val context: Context) {
             listeners.clear()
             releaseLock()
         }
+    }
+
+    /**
+     * 一次性探测：在 [timeoutMs] 内收集发现的设备（按 IP 去重）。
+     * 用于「打开电视」前实时补全唤醒所需的蓝牙 MAC / WOL / Wi-Fi MAC——
+     * 这些字段可能因手动 IP 连接或设备记录过旧而缺失。
+     */
+    suspend fun scan(timeoutMs: Long): List<DiscoveredDevice> {
+        val out = mutableListOf<DiscoveredDevice>()
+        runCatching {
+            withTimeoutOrNull(timeoutMs) {
+                discover().collect { out.add(it) }
+            }
+        }
+        return out.distinctBy { it.id }
     }
 
     private fun ipv4Of(info: NsdServiceInfo): String? {

@@ -9,6 +9,7 @@ import com.tvhelper.app.net.AirkanAuthException
 import com.tvhelper.app.protocol.airkan.AirkanCrypto
 import com.tvhelper.app.net.DiscoveredDevice
 import com.tvhelper.app.net.IpProbe
+import com.tvhelper.app.net.MdnsDiscovery
 import com.tvhelper.app.net.NetUtils
 import com.tvhelper.app.net.PowerOn
 import com.tvhelper.app.net.RcClient
@@ -127,6 +128,7 @@ class TvRepository(
     /** 最近一次成功连接的设备，作为「开机」指令的目标（息屏/关机后连接已断，据此重连） */
     private var lastConnectDevice: TvDevice? = null
     private var powerOnJob: Job? = null
+    private var powerOnInstance: PowerOn? = null
 
     private val _notices = MutableSharedFlow<Notice>(extraBufferCapacity = 32)
     val notices: SharedFlow<Notice> = _notices
@@ -854,16 +856,53 @@ class TvRepository(
      * 之后进入「待开机」状态并轮询重连，电视一旦回连即翻转为 ON。
      * 依赖缺失的路径会被跳过并在提示里说明，不会抛异常。
      */
+    /**
+     * 从 mDNS 实时补全唤醒元数据：蓝牙 MAC / WOL / Wi-Fi MAC。
+     * 覆盖「手动 IP 连接」或设备记录过旧导致这些字段缺失的情况
+     * （此前因此三路唤醒全跳过、点「打开」无反应）。
+     */
+    private suspend fun enrichWakeMeta(base: TvDevice): TvDevice {
+        val found = runCatching { MdnsDiscovery(appContext).scan(4000) }.getOrDefault(emptyList())
+        val hit = found.firstOrNull { it.id == base.host || it.host == base.host }
+        // 兜底：曾经连接过并持久化的设备记录里可能已存过蓝牙 MAC / WOL / Wi-Fi MAC。
+        // 电视关机后 mDNS 不可达（此前 22:27 日志即「mDNS 未广播」导致三路全跳过），
+        // 此时用持久化记录仍能发起唤醒。
+        val persisted = runCatching { settings.lastDevice.first() }.getOrNull()
+            ?.takeIf { it.host == base.host }
+        val device = base.copy(
+            wifiMac = base.wifiMac ?: hit?.wifiMac ?: persisted?.wifiMac,
+            btMac = base.btMac ?: hit?.btMac ?: persisted?.btMac,
+            wol = base.wol || hit?.wol == true || persisted?.wol == true,
+        )
+        if (device.btMac != null || device.wol) {
+            Log.i(TAG, "mDNS 补全唤醒元数据：btMac=${device.btMac} wol=${device.wol} wifiMac=${device.wifiMac}")
+        } else {
+            Log.i(TAG, "mDNS 未找到匹配设备(host=${base.host})，持久化兜底也无 MAC，无法补全唤醒元数据")
+        }
+        // 持久化补全后的唤醒元数据，电视下次关机离线时仍可尝试唤醒
+        runCatching { settings.setLastDevice(device) }
+        return device
+    }
+
     suspend fun powerOn(): Boolean = withContext(Dispatchers.IO) {
-        val device = lastConnectDevice ?: run {
+        val base = lastConnectDevice ?: run {
             notice("没有可开机的电视记录，请先在首页连接一次", true)
             return@withContext false
         }
-        val report = runCatching { PowerOn(appContext).wake(device) }
-            .onFailure { Log.w(TAG, "开机唤醒失败：${it.message}") }
+        // 实时从 mDNS 补全唤醒元数据（蓝牙 MAC / WOL / Wi-Fi MAC），
+        // 并用持久化记录兜底，覆盖「手动 IP 连接 / 电视已关机 mDNS 不可达」导致字段缺失的情况
+        val device = enrichWakeMeta(base)
+        Log.i(TAG, "powerOn 设备元数据：host=${device.host} btMac=${device.btMac} wol=${device.wol} wifiMac=${device.wifiMac}")
+        // beginWake 立即返回：WOL 同步发，BLE/SPP 以后台任务持续尝试；结束后务必 stopWake
+        val po = PowerOn(appContext)
+        powerOnInstance = po
+        val report = runCatching { po.beginWake(device) }
+            .onFailure { Log.w(TAG, "开机唤醒启动失败：${it.message}") }
             .getOrElse { PowerOn.Report(false, false, false, false, false, false, listOf(it.message ?: "未知错误")) }
         Log.i(TAG, "开机尝试：${report.summary}")
         if (!report.attempted) {
+            po.stopWake()
+            powerOnInstance = null
             notice(
                 "无法发起网络唤醒：${report.reasons.joinToString("；")}。" +
                     "若电视处于息屏状态，请用电视遥控器或实体电源键唤醒。",
@@ -872,36 +911,42 @@ class TvRepository(
             return@withContext false
         }
         _tvPowerState.value = TvPowerState.WAKING
-        notice("已发送唤醒信号（${report.summary}），等待电视网络恢复…")
+        notice("已发送唤醒信号（${report.summary}），正在持续尝试唤醒（约 75s）…")
         // 集中由本任务驱动重连轮询，避免与既有重连循环打架
         reconnectJob?.cancel()
         reconnectJob = null
         userDisconnected = false
         powerOnJob?.cancel()
         powerOnJob = scope.launch {
-            val deadline = System.currentTimeMillis() + 75_000L
-            while (isActive && System.currentTimeMillis() < deadline) {
+            try {
+                val deadline = System.currentTimeMillis() + 75_000L
+                while (isActive && System.currentTimeMillis() < deadline) {
+                    if (_connection.value.isConnected) {
+                        _tvPowerState.value = TvPowerState.REACHABLE
+                        // 网络恢复 ≠ 亮屏（息屏态网络也通），不做"开机成功"的断言
+                        notice("电视网络已恢复连接。若屏幕仍未亮起，请用电视遥控器或实体电源键唤醒屏幕。")
+                        return@launch
+                    }
+                    if (_connection.value.phase != ConnectionPhase.CONNECTING) {
+                        connect(device, force = false)
+                    }
+                    delay(3_000L)
+                }
                 if (_connection.value.isConnected) {
                     _tvPowerState.value = TvPowerState.REACHABLE
-                    // 网络恢复 ≠ 亮屏（息屏态网络也通），不做"开机成功"的断言
-                    notice("电视网络已恢复连接。若屏幕仍未亮起，请用电视遥控器或实体电源键唤醒屏幕。")
-                    return@launch
+                } else {
+                    _tvPowerState.value = TvPowerState.UNREACHABLE
+                    notice(
+                        "75s 内未能恢复与电视的网络连接。" +
+                            "这台电视未广播 WOL/蓝牙唤醒信息，无法网络唤醒，请按实体电源键开机；" +
+                            "若电视实际已亮屏，请在首页手动连接。",
+                        true,
+                    )
                 }
-                if (_connection.value.phase != ConnectionPhase.CONNECTING) {
-                    connect(device, force = false)
-                }
-                delay(3_000L)
-            }
-            if (_connection.value.isConnected) {
-                _tvPowerState.value = TvPowerState.REACHABLE
-            } else {
-                _tvPowerState.value = TvPowerState.UNREACHABLE
-                notice(
-                    "75s 内未能恢复与电视的网络连接。" +
-                        "这台电视未广播 WOL/蓝牙唤醒信息，无法网络唤醒，请按实体电源键开机；" +
-                        "若电视实际已亮屏，请在首页手动连接。",
-                    true,
-                )
+            } finally {
+                // 无论成功/超时/取消，停止 BLE 广播与 SPP 重试，释放蓝牙资源
+                runCatching { po.stopWake() }
+                powerOnInstance = null
             }
         }
         true

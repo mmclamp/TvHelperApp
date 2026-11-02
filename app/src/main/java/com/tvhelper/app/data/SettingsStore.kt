@@ -162,6 +162,9 @@ class SettingsStore(private val context: Context) {
         put("rcPort", d.rcPort)
         put("udtPort", d.udtPort)
         d.model?.let { m -> put("model", m) }
+        d.wifiMac?.let { m -> put("wifiMac", m) }
+        d.btMac?.let { m -> put("btMac", m) }
+        put("wol", d.wol)
     }
 
     private fun decodeDevice(o: JSONObject) = TvDevice(
@@ -171,6 +174,9 @@ class SettingsStore(private val context: Context) {
         rcPort = o.optInt("rcPort", 30612),
         udtPort = o.optInt("udtPort", 6093),
         model = o.optString("model", "").takeIf { it.isNotEmpty() },
+        wifiMac = o.optString("wifiMac", "").takeIf { it.isNotEmpty() },
+        btMac = o.optString("btMac", "").takeIf { it.isNotEmpty() },
+        wol = o.optBoolean("wol", false),
     )
 
     private fun decodeDevices(raw: String?): List<TvDevice> {

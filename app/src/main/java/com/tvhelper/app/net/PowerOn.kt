@@ -14,7 +14,13 @@ import android.os.ParcelUuid
 import android.util.Log
 import androidx.core.content.ContextCompat
 import com.tvhelper.app.data.TvDevice
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
@@ -39,6 +45,14 @@ import java.util.UUID
  *
  * 各路径均做能力探测：缺依赖（蓝牙 MAC / 权限 / 硬件支持）即跳过并记入 [PowerOnReport.reasons]，
  * 不抛异常。唤醒后由调用方（仓库重连循环）等待电视回连。
+ *
+ * 设计要点（修复点）：
+ * - **MAC 统一大写**：Android `BluetoothAdapter.checkBluetoothAddress()` 只接受大写十六进制，
+ *   mDNS 广播的小写 MAC（如 a8:96:09:9f:c8:76）会被判为非法地址，导致 `getRemoteDevice()` 抛错，
+ *   此前 SPP 一路必败。这里在入口处统一 `.uppercase()`。
+ * - **BLE 持续广播**：改为后台协程在整个唤醒窗口内循环续播（每段 25s 自动续），
+ *   覆盖电视从待机到扫描命中的周期；不再阻塞调用方。
+ * - **SPP 后台重试**：电视蓝牙从关机到上线有延迟，SPP 连接放后台重试，提高命中率。
  */
 class PowerOn(private val context: Context) {
 
@@ -50,10 +64,19 @@ class PowerOn(private val context: Context) {
         private val SPP_UUID = UUID.fromString("8ce255c0-200a-11e0-ac64-0905200c1a6a")
         /** BLE 广播开机 serviceUuid 模板（%s 依次为蓝牙 MAC 六段） */
         private const val POWER_ON_SERVICE_FORMAT = "00%s%s%s-%s%s-%s01-00ff-030501020100"
-        /** BLE 广播时长（ms），到了主动停止，避免一直霸占广播资源 */
-        private const val BLE_ADVERTISE_MS = 30_000L
+        /** BLE 单段广播时长（ms），到了由 runBleWake 自动续播 */
+        private const val BLE_ADVERTISE_MS = 25_000L
+        /** SPP 后台重试次数与间隔（电视蓝牙上线有延迟） */
+        private const val SPP_RETRIES = 3
+        private const val SPP_RETRY_DELAY_MS = 2_500L
         private val MAC_RE = Regex("([0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}")
     }
+
+    /** 自有后台作用域：承载 BLE 续播与 SPP 重试，生命周期由 stopWake 收尾 */
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var bleAdvertiser: BluetoothLeAdvertiser? = null
+    private var bleCallback: AdvertiseCallback? = null
+    private val wakeJobs = mutableListOf<Job>()
 
     /** 本次唤醒尝试的结果与未命中原因 */
     data class Report(
@@ -76,15 +99,24 @@ class PowerOn(private val context: Context) {
             }
     }
 
+    /**
+     * 发起唤醒：WOL 同步发送（若支持），BLE 与 SPP 以后台任务持续尝试（不阻塞），
+     * 立即返回 [Report]（标记各路是否已发起）。调用方在唤醒成功/超时时务必调用 [stopWake]。
+     */
     @SuppressLint("MissingPermission")
-    suspend fun wake(device: TvDevice): Report {
+    fun beginWake(device: TvDevice): Report {
         val reasons = mutableListOf<String>()
+        // 关键修复：MAC 统一大写 + 去空格，否则 Android 校验小写 MAC 为非法地址使 SPP 必败
+        val dev = device.copy(
+            btMac = device.btMac?.trim()?.uppercase(),
+            wifiMac = device.wifiMac?.trim()?.uppercase(),
+        )
 
         // ---- 1) WOL ----
-        val wolSupported = device.wol && parseMac(device.wifiMac) != null
+        val wolSupported = dev.wol && parseMac(dev.wifiMac) != null
         var wolSent = false
-        if (device.wol) {
-            val macBytes = parseMac(device.wifiMac)
+        if (dev.wol) {
+            val macBytes = parseMac(dev.wifiMac)
             if (macBytes != null) {
                 wolSent = runCatching { sendWol(macBytes) }.onFailure {
                     reasons += "WOL发送失败：${it.message}"
@@ -94,30 +126,28 @@ class PowerOn(private val context: Context) {
             }
         }
 
-        // ---- 2) BLE 广播 ----
-        val bleSupported = hasBleAdvertiseCapability(device)
+        // ---- 2) BLE 广播（后台持续续播，直到 stopWake）----
+        val bleSupported = hasBleAdvertiseCapability(dev)
         var bleSent = false
         if (bleSupported) {
-            bleSent = runCatching { sendBleWake(device.btMac!!) }.onFailure {
-                reasons += "BLE开机失败：${it.message}"
-            }.isSuccess
-        } else if (device.btMac != null) {
-            reasons += "手机不支持BLE广播或缺少BLUETOOTH_ADVERTISE权限"
+            bleSent = true
+            wakeJobs += scope.launch { runBleWake(dev.btMac!!) }
+        } else if (dev.btMac != null) {
+            reasons += "手机不支持BLE广播或缺少BLUETOOTH_ADVERTISE权限（请开启蓝牙）"
         }
 
-        // ---- 3) 经典蓝牙 SPP ----
-        val btSupported = hasBluetoothConnect() && parseMac(device.btMac) != null
+        // ---- 3) 经典蓝牙 SPP（后台重试）----
+        val btSupported = hasBluetoothConnect() && parseMac(dev.btMac) != null
         var btSent = false
         if (btSupported) {
-            btSent = runCatching { sendBtWake(device.btMac!!) }.onFailure {
-                reasons += "蓝牙SPP开机失败：${it.message}"
-            }.isSuccess
-        } else if (device.btMac != null) {
-            reasons += "缺少BLUETOOTH_CONNECT权限，无法经典蓝牙开机"
+            btSent = true
+            wakeJobs += scope.launch { runBtWake(dev.btMac!!) }
+        } else if (dev.btMac != null) {
+            reasons += "缺少BLUETOOTH_CONNECT权限，无法经典蓝牙开机（请授权并开启蓝牙）"
         }
 
-        if (device.btMac == null) reasons += "未获取到电视蓝牙MAC（mDNS未广播），BLE/蓝牙开机不可用"
-        if (!device.wol) reasons += "电视未广播WOL支持，网络唤醒不可用"
+        if (dev.btMac == null) reasons += "未获取到电视蓝牙MAC，BLE/蓝牙开机不可用"
+        if (!dev.wol) reasons += "电视未广播WOL支持，网络唤醒不可用"
 
         return Report(
             wolSupported = wolSupported,
@@ -128,6 +158,17 @@ class PowerOn(private val context: Context) {
             btSent = btSent,
             reasons = reasons.distinct(),
         )
+    }
+
+    /** 停止全部唤醒任务与 BLE 广播（唤醒成功或超时时由调用方调用） */
+    fun stopWake() {
+        bleCallback?.let { cb ->
+            runCatching { bleAdvertiser?.stopAdvertising(cb) }
+        }
+        bleCallback = null
+        bleAdvertiser = null
+        wakeJobs.forEach { runCatching { it.cancel() } }
+        wakeJobs.clear()
     }
 
     // ---------------------------------------------------------------- WOL
@@ -162,33 +203,44 @@ class PowerOn(private val context: Context) {
         return adapter.isMultipleAdvertisementSupported
     }
 
+    /** BLE 广播开机：循环续播直到 [stopWake]，覆盖电视待机扫描周期 */
     @SuppressLint("MissingPermission")
-    private suspend fun sendBleWake(btMac: String) {
-        val adapter = bluetoothAdapter() ?: error("无蓝牙适配器")
-        val advertiser: BluetoothLeAdvertiser = adapter.bluetoothLeAdvertiser
-            ?: error("手机不支持BLE广播")
+    private suspend fun runBleWake(btMac: String) {
+        val adapter = bluetoothAdapter() ?: run {
+            Log.w(TAG, "BLE 开机失败：无蓝牙适配器"); return
+        }
+        val advertiser = adapter.bluetoothLeAdvertiser ?: run {
+            Log.w(TAG, "BLE 开机失败：手机不支持BLE广播"); return
+        }
         val uuid = ParcelUuid.fromString(buildPowerOnUuid(btMac))
-        val settings = AdvertiseSettings.Builder()
-            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
-            .setConnectable(false)
-            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
-            .setTimeout(BLE_ADVERTISE_MS.toInt())
-            .build()
-        val data = AdvertiseData.Builder()
-            .addServiceUuid(uuid)
-            .build()
+        val data = AdvertiseData.Builder().addServiceUuid(uuid).build()
         val cb = object : AdvertiseCallback() {
             override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
-                Log.i(TAG, "BLE 开机广播已启动（$BLE_ADVERTISE_MS ms）：$uuid")
+                Log.i(TAG, "BLE 开机广播已启动（$BLE_ADVERTISE_MS ms/段）：$uuid")
             }
             override fun onStartFailure(errorCode: Int) {
                 Log.w(TAG, "BLE 开机广播启动失败 errorCode=$errorCode")
             }
         }
-        advertiser.startAdvertising(settings, data, cb)
-        // 播够时长后自动停止，释放资源
-        delay(BLE_ADVERTISE_MS)
-        runCatching { advertiser.stopAdvertising(cb) }
+        bleAdvertiser = advertiser
+        bleCallback = cb
+        val settings = AdvertiseSettings.Builder()
+            // 复刻原版：connectable=true（电视靠「连接」该广播触发开机，false 则电视不响应）、
+            // LOW_POWER 模式、HIGH 发射功率。超时取单段时长，到时由本循环自动续播。
+            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_POWER)
+            .setConnectable(true)
+            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
+            .setTimeout(BLE_ADVERTISE_MS.toInt())
+            .build()
+        while (scope.isActive && bleCallback != null) {
+            try {
+                advertiser.startAdvertising(settings, data, cb)
+            } catch (t: Throwable) {
+                Log.w(TAG, "BLE startAdvertising 异常：${t.message}")
+                break
+            }
+            delay(BLE_ADVERTISE_MS)
+        }
     }
 
     /** 由蓝牙 MAC 拼出原版 serviceUuid：00AABBCC-DDEE-FF01-00ff-030501020100 */
@@ -209,13 +261,31 @@ class PowerOn(private val context: Context) {
             ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) ==
             android.content.pm.PackageManager.PERMISSION_GRANTED
 
+    /** 后台重试 SPP 连接发 keycode 26，覆盖电视从待机到蓝牙上线的延迟 */
     @SuppressLint("MissingPermission")
-    private fun sendBtWake(btMac: String) {
+    private suspend fun runBtWake(btMac: String) {
+        repeat(SPP_RETRIES) { i ->
+            if (!scope.isActive) return
+            try {
+                sendBtWakeOnce(btMac)
+                Log.i(TAG, "蓝牙SPP开机指令已发送（$btMac）")
+                return
+            } catch (t: Throwable) {
+                Log.w(TAG, "蓝牙SPP开机第 ${i + 1}/$SPP_RETRIES 次失败：${t.message}")
+                if (i < SPP_RETRIES - 1) delay(SPP_RETRY_DELAY_MS)
+            }
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun sendBtWakeOnce(btMac: String) {
         val adapter = bluetoothAdapter() ?: error("无蓝牙适配器")
         if (!adapter.isEnabled) error("蓝牙未开启")
-        val socket = adapter.getRemoteDevice(btMac).createInsecureRfcommSocketToServiceRecord(SPP_UUID)
-        socket.connect()
+        // btMac 已统一大写，checkBluetoothAddress 才能通过
+        val device = adapter.getRemoteDevice(btMac)
+        val socket = device.createInsecureRfcommSocketToServiceRecord(SPP_UUID)
         try {
+            socket.connect()
             val out = socket.outputStream
             val json = """{"cmd":"security","keycode":26}""".toByteArray(Charsets.UTF_8)
             val header = byteArrayOf(
@@ -226,7 +296,6 @@ class PowerOn(private val context: Context) {
             out.write(header)
             out.write(json)
             out.flush()
-            Log.i(TAG, "蓝牙SPP开机指令已发送（$btMac）")
         } finally {
             runCatching { socket.close() }
         }

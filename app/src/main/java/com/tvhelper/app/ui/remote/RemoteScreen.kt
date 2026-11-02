@@ -611,10 +611,10 @@ private fun LabeledKey(
 }
 
 /**
- * 电源区：始终给出两个动作，由用户按电视实际屏态选择。
- * - 电源（红）：发 KEYCODE_POWER 切换键。亮屏→关机/熄屏；息屏被固件静默丢弃（无副作用）。仅连接态可用。
- * - 打开（中性）：唤醒（WoL/BLE/经典蓝牙）。息屏/关机态用来开机；连接态也始终可见（协议无法区分亮屏/息屏）。
- * 断线态（UNREACHABLE）只显示「打开」；唤醒等待态（WAKING）禁用并提示「开机中…」。
+ * 电源区：按网络可达性切换两个动作，对齐原版「已连发 POWER 关、未连走四路开」语义。
+ * - 电源（红）：仅已连(REACHABLE)时显示，发 KEYCODE_POWER 切换键——亮屏→关机/熄屏，息屏→重新亮屏。
+ * - 打开（中性）：仅断网(UNREACHABLE)或唤醒中(WAKING)时显示，发起 WoL/BLE/经典蓝牙唤醒。
+ *   原因：息屏时网络仍通(REACHABLE)，对已连电视再发唤醒信号要么无效果、要么反而关机，故已连时只给切换键。
  */
 @Composable
 private fun PowerCluster(
@@ -649,7 +649,9 @@ private fun PowerCluster(
 
     val canPower = deviceKnown && powerState == TvPowerState.REACHABLE
     val waking = powerState == TvPowerState.WAKING
-    val canWake = deviceKnown && !waking
+    // 「打开」只在断网/未连(UNREACHABLE)或唤醒中(WAKING)出现；已连(REACHABLE)时电视是亮屏或息屏
+    // 但网络仍通，直接用「电源」键切换屏即可，避免对已连电视误发唤醒信号（无效果/反而关机）
+    val canWake = deviceKnown && (powerState == TvPowerState.UNREACHABLE || waking)
 
     Row(verticalAlignment = Alignment.CenterVertically) {
         if (canPower) {
@@ -696,9 +698,10 @@ private fun PowerCluster(
             title = { Text("发送电源键") },
             text = {
                 Text(
-                    "电视亮屏时：发送后关机/熄屏。\n" +
-                        "电视息屏/待机时：按键会被固件丢弃（不亮屏），请改用旁边的「打开」按钮（WoL/BLE/蓝牙唤醒）。\n" +
-                        "电视已关机时：连接已断开，「打开」按钮会自动尝试网络/蓝牙唤醒。",
+                    "电源键是「开/关屏」切换键：\n" +
+                        "· 电视亮屏时：发送后关机/熄屏；\n" +
+                        "· 电视息屏/待机时：发送后会重新亮屏；\n" +
+                        "· 电视已关机（网络断开）：电源键发不出去，请在下方用「打开」按钮（WoL/BLE/蓝牙唤醒）。",
                 )
             },
             confirmButton = {
