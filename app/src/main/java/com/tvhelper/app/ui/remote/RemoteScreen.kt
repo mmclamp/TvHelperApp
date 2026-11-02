@@ -316,7 +316,7 @@ private fun QuickRow(
         Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceEvenly,
     ) {
-        PowerButton(vm = vm, powerState = powerState, deviceKnown = deviceKnown, palette = palette)
+        PowerCluster(vm = vm, powerState = powerState, deviceKnown = deviceKnown, palette = palette)
         LabeledKey(
             label = muteLabel, enabled = enabled, palette = palette,
             container = muteContainer,
@@ -610,18 +610,23 @@ private fun LabeledKey(
     }
 }
 
+/**
+ * 电源区：始终给出两个动作，由用户按电视实际屏态选择。
+ * - 电源（红）：发 KEYCODE_POWER 切换键。亮屏→关机/熄屏；息屏被固件静默丢弃（无副作用）。仅连接态可用。
+ * - 打开（中性）：唤醒（WoL/BLE/经典蓝牙）。息屏/关机态用来开机；连接态也始终可见（协议无法区分亮屏/息屏）。
+ * 断线态（UNREACHABLE）只显示「打开」；唤醒等待态（WAKING）禁用并提示「开机中…」。
+ */
 @Composable
-private fun PowerButton(
+private fun PowerCluster(
     vm: TvViewModel,
     powerState: TvPowerState,
     deviceKnown: Boolean,
     palette: RemotePalette,
 ) {
     val context = LocalContext.current
-    // 电源是高代价操作（可能直接关电视）：亮屏态点按弹确认框，防误触
     var confirmOff by remember { mutableStateOf(false) }
 
-    // 息屏/关机态点按开机：BLE 广播开机需要蓝牙权限（Android 12+ 运行时申请）
+    // 唤醒(打开)需要蓝牙权限（Android 12+ 运行时申请），用于 BLE 广播开机
     val btPerms = if (Build.VERSION.SDK_INT >= 31) listOf(
         Manifest.permission.BLUETOOTH_ADVERTISE,
         Manifest.permission.BLUETOOTH_CONNECT,
@@ -642,36 +647,47 @@ private fun PowerButton(
         }
     }
 
-    // 状态区分：颜色 / 标签 / 行为随可达性变化
-    // 注意：REACHABLE（网络可达）不代表电视亮屏——息屏态网络也通且协议无法区分，故标签用中性"电源"
-    val (iconTint, label) = when (powerState) {
-        TvPowerState.REACHABLE -> TvColors.danger to "电源"
-        TvPowerState.WAKING -> palette.sub to "开机中…"
-        TvPowerState.UNREACHABLE -> palette.keyGlyph to "开机"
-    }
-    val enabled = deviceKnown && powerState != TvPowerState.WAKING
+    val canPower = deviceKnown && powerState == TvPowerState.REACHABLE
+    val waking = powerState == TvPowerState.WAKING
+    val canWake = deviceKnown && !waking
 
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        RoundButton(
-            onPress = {},
-            onRelease = {
-                when (powerState) {
-                    TvPowerState.REACHABLE -> confirmOff = true
-                    TvPowerState.UNREACHABLE -> tryPowerOn()
-                    TvPowerState.WAKING -> { /* 等待回连，忽略 */ }
-                }
-            },
-            enabled = enabled,
-            size = 58,
-            container = TvColors.danger.copy(alpha = if (powerState == TvPowerState.REACHABLE) 0.16f else 0.10f),
-            contentColor = iconTint,
-            borderColor = TvColors.danger.copy(alpha = 0.4f),
-            pressColor = TvColors.danger,
-        ) {
-            PowerIcon(tint = iconTint, modifier = Modifier.size(26.dp))
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        if (canPower) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                RoundButton(
+                    onPress = {},
+                    onRelease = { confirmOff = true },
+                    enabled = true,
+                    size = 52,
+                    container = TvColors.danger.copy(alpha = 0.16f),
+                    contentColor = TvColors.danger,
+                    borderColor = TvColors.danger.copy(alpha = 0.4f),
+                    pressColor = TvColors.danger,
+                ) { PowerIcon(tint = TvColors.danger, modifier = Modifier.size(24.dp)) }
+                Spacer(Modifier.height(4.dp))
+                Text("电源", style = MaterialTheme.typography.labelSmall, color = palette.label)
+            }
         }
-        Spacer(Modifier.height(4.dp))
-        Text(label, style = MaterialTheme.typography.labelSmall, color = palette.label)
+        if (canPower && canWake) Spacer(Modifier.width(10.dp))
+        if (canWake) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                RoundButton(
+                    onPress = {},
+                    onRelease = { if (!waking) tryPowerOn() },
+                    enabled = !waking,
+                    size = 52,
+                    container = palette.keyFill,
+                    contentColor = palette.keyGlyph,
+                    pressColor = palette.keyFillPressed,
+                ) { OpenIcon(tint = palette.keyGlyph, modifier = Modifier.size(24.dp)) }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    if (waking) "开机中…" else "打开",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = palette.label,
+                )
+            }
+        }
     }
 
     if (confirmOff) {
@@ -681,8 +697,8 @@ private fun PowerButton(
             text = {
                 Text(
                     "电视亮屏时：发送后关机/熄屏。\n" +
-                        "电视息屏/待机时：按键会被固件丢弃（不亮屏），需用电视遥控器或实体电源键唤醒。\n" +
-                        "电视已关机时：连接已断开，本按钮不会出现。",
+                        "电视息屏/待机时：按键会被固件丢弃（不亮屏），请改用旁边的「打开」按钮（WoL/BLE/蓝牙唤醒）。\n" +
+                        "电视已关机时：连接已断开，「打开」按钮会自动尝试网络/蓝牙唤醒。",
                 )
             },
             confirmButton = {
@@ -691,6 +707,45 @@ private fun PowerButton(
             dismissButton = {
                 TextButton(onClick = { confirmOff = false }) { Text("取消") }
             },
+        )
+    }
+}
+
+/** 自绘「打开/唤醒」图标：圆环 + 向上箭头（与电源键区分） */
+@Composable
+private fun OpenIcon(tint: Color, modifier: Modifier = Modifier) {
+    androidx.compose.foundation.Canvas(modifier = modifier) {
+        val stroke = size.minDimension * 0.1f
+        val cx = size.width / 2f
+        val cy = size.height / 2f
+        val r = (size.minDimension - stroke) / 2f
+        val arc = androidx.compose.ui.graphics.drawscope.Stroke(
+            width = stroke,
+            cap = androidx.compose.ui.graphics.StrokeCap.Round,
+        )
+        drawCircle(color = tint, radius = r, style = arc)
+        val topY = cy - r * 0.42f
+        val botY = cy + r * 0.34f
+        drawLine(
+            tint,
+            androidx.compose.ui.geometry.Offset(cx, botY),
+            androidx.compose.ui.geometry.Offset(cx, topY),
+            strokeWidth = stroke,
+            cap = androidx.compose.ui.graphics.StrokeCap.Round,
+        )
+        drawLine(
+            tint,
+            androidx.compose.ui.geometry.Offset(cx, topY),
+            androidx.compose.ui.geometry.Offset(cx - r * 0.26f, topY + r * 0.3f),
+            strokeWidth = stroke,
+            cap = androidx.compose.ui.graphics.StrokeCap.Round,
+        )
+        drawLine(
+            tint,
+            androidx.compose.ui.geometry.Offset(cx, topY),
+            androidx.compose.ui.geometry.Offset(cx + r * 0.26f, topY + r * 0.3f),
+            strokeWidth = stroke,
+            cap = androidx.compose.ui.graphics.StrokeCap.Round,
         )
     }
 }
