@@ -41,6 +41,12 @@ object UdtMethods {
     const val SET_VOLUME = "setVolume"
     const val GET_MUTE = "getMute"
 
+    /** 查询电视运行状态：原版 com.xiaomi.mitv.phone.tvassistant.udt.SocialRequest.getDeviceStatus，
+     *  响应含 isScreenOn（true=亮屏 / false=息屏待机）与 deviceStatus（5=休眠）。
+     *  是电源键「注入切换」与「网络/蓝牙唤醒」的分流依据——协议层无法靠网络可达性区分亮屏/息屏，
+     *  息屏态网络也全通但注入键被固件静默丢弃，必须靠这个字段判断。无参、无 ts 前缀（同 getVolume 反射约定）。 */
+    const val GET_DEVICE_STATUS = "getDeviceStatus"
+
     /** 电视端定义的应用安装状态 */
     const val APP_STATUS_UNINSTALL = 0
     const val APP_STATUS_INSTALLED = 1
@@ -163,6 +169,13 @@ object UdtMethods {
     fun getMute(id: Int): UdtCodec.Request = UdtCodec.Request(
         requestId = UdtCodec.newRequestId(),
         call = call(GET_MUTE, null, useDataChannelReturn = true, prefixTs = false),
+        id = id,
+    )
+
+    /** 查询电视运行状态（含 isScreenOn / deviceStatus）；无参、无 ts 前缀，同 getVolume 反射约定。 */
+    fun getDeviceStatus(id: Int): UdtCodec.Request = UdtCodec.Request(
+        requestId = UdtCodec.newRequestId(),
+        call = call(GET_DEVICE_STATUS, null, useDataChannelReturn = true, prefixTs = false),
         id = id,
     )
 

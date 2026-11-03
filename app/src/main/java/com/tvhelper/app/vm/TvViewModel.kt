@@ -58,6 +58,9 @@ class TvViewModel(
     /** 电视电源状态机（亮屏/待开机/关机），驱动电源键的状态区分 UI */
     val tvPowerState: StateFlow<TvPowerState> = repo.tvPowerState
 
+    /** 电视屏幕是否点亮（true=亮屏 / false=息屏待机 / null=未知），驱动「电源」(注入) vs「打开」(唤醒) 分流 */
+    val tvScreenOn: StateFlow<Boolean?> = repo.tvScreenOn
+
     val pinnedApps: StateFlow<List<PinnedApp>> =
         repo.pinnedApps.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 

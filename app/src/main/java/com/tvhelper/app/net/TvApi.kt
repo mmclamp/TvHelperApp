@@ -135,4 +135,36 @@ class TvApi(private val udt: UdtClient) {
     suspend fun longPressHome(): Int = fireAndForget(UdtMethods.LONG_PRESS_HOME)
     suspend fun longPressPower(): Int = fireAndForget(UdtMethods.LONG_PRESS_POWER)
     suspend fun reboot(): Int = fireAndForget(UdtMethods.REBOOT)
+
+    /** 电视运行状态：screenOn=null 表示查询失败/电视不支持该方法 */
+    data class DeviceStatus(val screenOn: Boolean?, val deviceStatus: Int?)
+
+    /**
+     * 查询电视运行状态（含 isScreenOn / deviceStatus），原版 RemoteDeviceStatus 的来源。
+     * 这是区分「亮屏」与「息屏待机」的权威信号：二者网络都通，但息屏时注入键被固件静默丢弃，
+     * 必须靠该字段决定电源键走「注入切换」还是「BLE/蓝牙唤醒」。
+     * 返回 null 表示链路不可用或该方法不支持（status≠0）。
+     */
+    suspend fun getDeviceStatus(): DeviceStatus? {
+        val msg = udt.call(UdtMethods.getDeviceStatus(nextId()), UdtMethods.TIMEOUT_DEFAULT)
+        if (msg.status != 0) {
+            Log.i(TAG, "getDeviceStatus status=${msg.status}（电视不支持或失败）")
+            return null
+        }
+        val r = msg.result ?: return null
+        // 兼容两种返回结构：isScreenOn 直接在 result，或被包在 result.result 字符串里
+        val nested = if (r.has("result")) runCatching { r.getJSONObject("result") }.getOrNull() else null
+        val screenOn = when {
+            r.has("isScreenOn") -> r.optBoolean("isScreenOn")
+            nested?.has("isScreenOn") == true -> nested.optBoolean("isScreenOn")
+            else -> null
+        }
+        val deviceStatus = when {
+            r.has("deviceStatus") -> r.optInt("deviceStatus", -1).takeIf { it >= 0 }
+            nested?.has("deviceStatus") == true -> nested.optInt("deviceStatus", -1).takeIf { it >= 0 }
+            else -> null
+        }
+        Log.i(TAG, "getDeviceStatus screenOn=$screenOn deviceStatus=$deviceStatus")
+        return DeviceStatus(screenOn, deviceStatus)
+    }
 }

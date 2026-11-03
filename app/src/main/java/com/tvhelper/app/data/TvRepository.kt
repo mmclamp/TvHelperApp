@@ -125,10 +125,16 @@ class TvRepository(
     private val _tvPowerState = MutableStateFlow(TvPowerState.UNREACHABLE)
     val tvPowerState: StateFlow<TvPowerState> = _tvPowerState
 
+    /** 电视屏幕是否点亮：true=亮屏 / false=息屏待机 / null=未知（查询不支持或尚未返回）。
+     *  关键分流依据——息屏态网络仍通(REACHABLE)但注入键被固件静默丢弃，必须靠它决定用「电源」(注入) 还是「打开」(BLE/蓝牙唤醒)。 */
+    private val _tvScreenOn = MutableStateFlow<Boolean?>(null)
+    val tvScreenOn: StateFlow<Boolean?> = _tvScreenOn
+
     /** 最近一次成功连接的设备，作为「开机」指令的目标（息屏/关机后连接已断，据此重连） */
     private var lastConnectDevice: TvDevice? = null
     private var powerOnJob: Job? = null
     private var powerOnInstance: PowerOn? = null
+    private var screenStateJob: Job? = null
 
     private val _notices = MutableSharedFlow<Notice>(extraBufferCapacity = 32)
     val notices: SharedFlow<Notice> = _notices
@@ -317,6 +323,8 @@ class TvRepository(
         // 遥控通道就绪即视为电视亮屏、可遥控
         lastConnectDevice = device
         _tvPowerState.value = TvPowerState.REACHABLE
+        // 启动屏幕状态轮询：区分亮屏/息屏，驱动电源键分流（注入 vs 唤醒）
+        startScreenStatePolling()
 
         // ---- 2) UDT 通道（首连强制重建）
         buildUdt(device, encrypted, existingPairing, rebuild = true)
@@ -503,6 +511,8 @@ class TvRepository(
         if (_tvPowerState.value != TvPowerState.WAKING) {
             _tvPowerState.value = TvPowerState.UNREACHABLE
         }
+        // 屏幕状态未知（断网后无法再查询）
+        stopScreenStatePolling()
         // 短重连低调提示：仅标记 RC 断开，不弹 Toast
         _connection.value = _connection.value.copy(
             phase = ConnectionPhase.CONNECTING,
@@ -560,6 +570,9 @@ class TvRepository(
             )
             lastConnectDevice = device
             _tvPowerState.value = TvPowerState.REACHABLE
+
+            // 重连成功同样恢复屏幕状态轮询
+            startScreenStatePolling()
 
             // UDT：存活复用，已死才重建（重建才查音量，不查 getMute）
             buildUdt(device, encrypted, existingPairing, rebuild = false)
@@ -845,6 +858,9 @@ class TvRepository(
     suspend fun powerOff(): Boolean {
         val ok = sendKey(TvKey.POWER)
         if (ok) {
+            // 亮屏时发 POWER → 电视熄屏（屏幕熄灭但网络仍通），乐观更新为息屏态
+            // （已进入重连/关机则 stopScreenStatePolling 会把它归位为 null）
+            _tvScreenOn.value = false
             notice("已发送电源键，电视可能熄屏/关机")
         }
         return ok
@@ -861,6 +877,36 @@ class TvRepository(
      * 覆盖「手动 IP 连接」或设备记录过旧导致这些字段缺失的情况
      * （此前因此三路唤醒全跳过、点「打开」无反应）。
      */
+    // ------------------------------------------------------------ 屏幕状态轮询
+    // 协议层无法靠网络可达性区分「亮屏」与「息屏待机」（二者网络都通），但息屏时注入键被固件
+    // 静默丢弃，必须靠 getDeviceStatus 的 isScreenOn 决定电源键走「注入切换」还是「BLE/蓝牙唤醒」。
+    // 连接期间每 4s 轮询一次；查询不支持/失败时维持 unknown（UI 双按钮兜底，唤醒始终可用）。
+
+    private fun startScreenStatePolling() {
+        screenStateJob?.cancel()
+        screenStateJob = scope.launch {
+            queryScreenState() // 立即可知一次
+            while (isActive && _connection.value.isConnected) {
+                delay(4_000L)
+                if (!_connection.value.isConnected) break
+                queryScreenState()
+            }
+        }
+    }
+
+    private fun stopScreenStatePolling() {
+        screenStateJob?.cancel()
+        screenStateJob = null
+        _tvScreenOn.value = null
+    }
+
+    private suspend fun queryScreenState() {
+        val client = udt ?: return
+        runCatching { TvApi(client).getDeviceStatus() }
+            .onSuccess { st -> st?.screenOn?.let { _tvScreenOn.value = it } }
+            .onFailure { Log.w(TAG, "查询屏幕状态失败：${it.message}") }
+    }
+
     private suspend fun enrichWakeMeta(base: TvDevice): TvDevice {
         val found = runCatching { MdnsDiscovery(appContext).scan(4000) }.getOrDefault(emptyList())
         val hit = found.firstOrNull { it.id == base.host || it.host == base.host }
@@ -910,12 +956,15 @@ class TvRepository(
             )
             return@withContext false
         }
+        // 正在尝试唤醒的是「非亮屏」电视（息屏待机或已关机），乐观标记屏幕熄灭
+        _tvScreenOn.value = false
         _tvPowerState.value = TvPowerState.WAKING
         notice("已发送唤醒信号（${report.summary}），正在持续尝试唤醒（约 75s）…")
         // 集中由本任务驱动重连轮询，避免与既有重连循环打架
         reconnectJob?.cancel()
         reconnectJob = null
         userDisconnected = false
+        val wasConnected = _connection.value.isConnected
         powerOnJob?.cancel()
         powerOnJob = scope.launch {
             try {
@@ -923,8 +972,13 @@ class TvRepository(
                 while (isActive && System.currentTimeMillis() < deadline) {
                     if (_connection.value.isConnected) {
                         _tvPowerState.value = TvPowerState.REACHABLE
-                        // 网络恢复 ≠ 亮屏（息屏态网络也通），不做"开机成功"的断言
-                        notice("电视网络已恢复连接。若屏幕仍未亮起，请用电视遥控器或实体电源键唤醒屏幕。")
+                        if (wasConnected) {
+                            // 息屏待机态网络本就连通：此处表示唤醒信号已发出，等待屏幕点亮
+                            notice("唤醒信号已发出，请稍候——若屏幕仍未亮起，可再次点击「打开」或按电视实体电源键。")
+                        } else {
+                            // 网络恢复 ≠ 亮屏（息屏态网络也通），不做"开机成功"的断言
+                            notice("电视网络已恢复连接。若屏幕仍未亮起，请用电视遥控器或实体电源键唤醒屏幕。")
+                        }
                         return@launch
                     }
                     if (_connection.value.phase != ConnectionPhase.CONNECTING) {
