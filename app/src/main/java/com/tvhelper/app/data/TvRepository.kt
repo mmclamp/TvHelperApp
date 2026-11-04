@@ -880,14 +880,15 @@ class TvRepository(
     // ------------------------------------------------------------ 屏幕状态轮询
     // 协议层无法靠网络可达性区分「亮屏」与「息屏待机」（二者网络都通），但息屏时注入键被固件
     // 静默丢弃，必须靠 getDeviceStatus 的 isScreenOn 决定电源键走「注入切换」还是「BLE/蓝牙唤醒」。
-    // 连接期间每 4s 轮询一次；查询不支持/失败时维持 unknown（UI 双按钮兜底，唤醒始终可用）。
+    // 连接期间每 10s 轮询一次；查询不支持/失败时维持 unknown（UI 双按钮兜底，唤醒始终可用）。
+    // 本机 L65MA-XT 固件返回 status=1 不支持该 RPC，故降为低频+debug 日志，避免刷屏。
 
     private fun startScreenStatePolling() {
         screenStateJob?.cancel()
         screenStateJob = scope.launch {
             queryScreenState() // 立即可知一次
             while (isActive && _connection.value.isConnected) {
-                delay(4_000L)
+                delay(10_000L)
                 if (!_connection.value.isConnected) break
                 queryScreenState()
             }
@@ -939,6 +940,8 @@ class TvRepository(
         // 并用持久化记录兜底，覆盖「手动 IP 连接 / 电视已关机 mDNS 不可达」导致字段缺失的情况
         val device = enrichWakeMeta(base)
         Log.i(TAG, "powerOn 设备元数据：host=${device.host} btMac=${device.btMac} wol=${device.wol} wifiMac=${device.wifiMac}")
+        // 重复点击「打开」：先停掉上一轮唤醒，避免多个 BLE 广播/SPP 任务并存
+        powerOnInstance?.stopWake()
         // beginWake 立即返回：WOL 同步发，BLE/SPP 以后台任务持续尝试；结束后务必 stopWake
         val po = PowerOn(appContext)
         powerOnInstance = po
@@ -959,35 +962,41 @@ class TvRepository(
         // 正在尝试唤醒的是「非亮屏」电视（息屏待机或已关机），乐观标记屏幕熄灭
         _tvScreenOn.value = false
         _tvPowerState.value = TvPowerState.WAKING
-        notice("已发送唤醒信号（${report.summary}），正在持续尝试唤醒（约 75s）…")
+        notice("已发送唤醒信号（${report.summary}），持续广播约 75s…")
         // 集中由本任务驱动重连轮询，避免与既有重连循环打架
         reconnectJob?.cancel()
         reconnectJob = null
         userDisconnected = false
-        val wasConnected = _connection.value.isConnected
         powerOnJob?.cancel()
         powerOnJob = scope.launch {
             try {
                 val deadline = System.currentTimeMillis() + 75_000L
+                // 关键修复：绝不能因「已连接」提前结束唤醒。
+                // 息屏/待机态网络本就全通，_connection.isConnected 恒为 true；旧逻辑第一次循环
+                // 就 return → finally 立刻 stopWake()，把刚 launch 的 BLE 续播/SPP 重试协程
+                // 掐死在启动前（日志里零条 PowerOn 记录 = 「打开无效」的确凿根因）。
+                // 现在让 BLE/SPP 跑满整个窗口；只有真正拿到 screenOn=true 才算唤醒成功。
                 while (isActive && System.currentTimeMillis() < deadline) {
-                    if (_connection.value.isConnected) {
+                    if (_tvScreenOn.value == true) {
                         _tvPowerState.value = TvPowerState.REACHABLE
-                        if (wasConnected) {
-                            // 息屏待机态网络本就连通：此处表示唤醒信号已发出，等待屏幕点亮
-                            notice("唤醒信号已发出，请稍候——若屏幕仍未亮起，可再次点击「打开」或按电视实体电源键。")
-                        } else {
-                            // 网络恢复 ≠ 亮屏（息屏态网络也通），不做"开机成功"的断言
-                            notice("电视网络已恢复连接。若屏幕仍未亮起，请用电视遥控器或实体电源键唤醒屏幕。")
-                        }
+                        notice("电视屏幕已点亮，唤醒完成。")
                         return@launch
                     }
-                    if (_connection.value.phase != ConnectionPhase.CONNECTING) {
+                    if (!_connection.value.isConnected &&
+                        _connection.value.phase != ConnectionPhase.CONNECTING
+                    ) {
                         connect(device, force = false)
                     }
                     delay(3_000L)
                 }
+                // 本机固件不返回 getDeviceStatus（status=1），screenOn 恒为 unknown，
+                // 所以通常走到超时：不把「网络仍通」误报成开机成功，只如实提示。
                 if (_connection.value.isConnected) {
                     _tvPowerState.value = TvPowerState.REACHABLE
+                    notice(
+                        "唤醒信号已持续发送 75s。若屏幕仍未亮起，请按电视实体电源键或遥控器开机；" +
+                            "本机固件不支持屏幕状态查询，无法自动确认亮屏。",
+                    )
                 } else {
                     _tvPowerState.value = TvPowerState.UNREACHABLE
                     notice(
@@ -998,9 +1007,9 @@ class TvRepository(
                     )
                 }
             } finally {
-                // 无论成功/超时/取消，停止 BLE 广播与 SPP 重试，释放蓝牙资源
+                // 窗口真正结束（超时/屏幕点亮/被取消）才停，此时 BLE/SPP 已充分运行
                 runCatching { po.stopWake() }
-                powerOnInstance = null
+                if (powerOnInstance === po) powerOnInstance = null
             }
         }
         true

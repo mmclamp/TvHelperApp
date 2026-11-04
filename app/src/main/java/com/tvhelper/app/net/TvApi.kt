@@ -148,7 +148,8 @@ class TvApi(private val udt: UdtClient) {
     suspend fun getDeviceStatus(): DeviceStatus? {
         val msg = udt.call(UdtMethods.getDeviceStatus(nextId()), UdtMethods.TIMEOUT_DEFAULT)
         if (msg.status != 0) {
-            Log.i(TAG, "getDeviceStatus status=${msg.status}（电视不支持或失败）")
+            // 部分固件（如 L65MA-XT）不暴露该 RPC，返回 status=1；降为 debug 避免每轮刷屏
+            Log.d(TAG, "getDeviceStatus status=${msg.status}（电视不支持或失败）")
             return null
         }
         val r = msg.result ?: return null
