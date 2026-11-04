@@ -159,7 +159,8 @@ class MdnsDiscovery(private val context: Context) {
                                     if (v == null) null else k to String(v, Charsets.UTF_8)
                                 }
                                 .toMap()
-                            Log.i(TAG, "resolved ${si.serviceName} ip=$ip keys=${attrs.keys} btmac=${attrs["btmac"]} wol=${attrs["wol"]} mac=${attrs["mac"]}")
+                            // platform_id 是原版 isIRSupport/isBTPowerOnSupport 机型分流的依据，落盘便于后续核对
+                            Log.i(TAG, "resolved ${si.serviceName} ip=$ip keys=${attrs.keys} btmac=${attrs["btmac"]} wol=${attrs["wol"]} mac=${attrs["mac"]} platform_id=${attrs["platform_id"]}")
                             val port = si.port.takeIf { it > 0 } ?: 0
                             val isRc = si.serviceType?.contains("_rc.") == true
                             // milink 服务会把真实 TCP 端口写在 TXT 里（tcp=6093），比 SRV 更权威

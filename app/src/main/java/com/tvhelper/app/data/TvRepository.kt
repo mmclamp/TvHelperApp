@@ -75,6 +75,12 @@ class TvRepository(
         /** Social 服务（音量等）：原版 v9.c UDTClient{port=9093, appId=1026} */
         private const val SOCIAL_PORT = 9093
         private const val SOCIAL_APP_ID = 1026
+
+        /** 红外电源是「切换键」：冷却窗口内重复点击直接忽略，避免刚点亮又被第二帧关掉。
+         *  v1.8.26 日志实证曾在 3.7s 内连发两帧红外（21:42:57.840 / 21:43:01.497）。 */
+        private const val IR_COOLDOWN_MS = 10_000L
+        /** 红外发射后「开机中…」的展示时长；本机固件不提供 isScreenOn，无法自动确认亮屏 */
+        private const val IR_WAKING_MS = 8_000L
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -135,6 +141,10 @@ class TvRepository(
     private var powerOnJob: Job? = null
     private var powerOnInstance: PowerOn? = null
     private var screenStateJob: Job? = null
+    /** 上次成功发射红外电源码的时刻（切换键冷却去抖） */
+    private var lastIrFireAt = 0L
+    /** 连续拿不到 isScreenOn 的次数；≥2 判定本机固件不支持该 RPC，熔断轮询（进程级事实） */
+    private var screenStatusFailures = 0
 
     private val _notices = MutableSharedFlow<Notice>(extraBufferCapacity = 32)
     val notices: SharedFlow<Notice> = _notices
@@ -879,18 +889,19 @@ class TvRepository(
      */
     // ------------------------------------------------------------ 屏幕状态轮询
     // 协议层无法靠网络可达性区分「亮屏」与「息屏待机」（二者网络都通），但息屏时注入键被固件
-    // 静默丢弃，必须靠 getDeviceStatus 的 isScreenOn 决定电源键走「注入切换」还是「BLE/蓝牙唤醒」。
-    // 连接期间每 10s 轮询一次；查询不支持/失败时维持 unknown（UI 双按钮兜底，唤醒始终可用）。
-    // 本机 L65MA-XT 固件返回 status=1 不支持该 RPC，故降为低频+debug 日志，避免刷屏。
+    // 静默丢弃，理想情况靠 getDeviceStatus 的 isScreenOn 决定电源键走「注入切换」还是「唤醒」。
+    // 但本机 L65MA-XT 固件恒定返回 status=1（反编译树里只有 SocialRequest 接口声明，固件未实现），
+    // 每 10s 发一个 639 字节加密包纯属无效流量；连续 2 次拿不到 isScreenOn 即熔断轮询。
+    // 此后 _tvScreenOn 维持 unknown，UI 双按钮兜底，唤醒入口始终可用。
 
     private fun startScreenStatePolling() {
         screenStateJob?.cancel()
+        if (screenStatusFailures >= 2) return
         screenStateJob = scope.launch {
-            queryScreenState() // 立即可知一次
-            while (isActive && _connection.value.isConnected) {
-                delay(10_000L)
-                if (!_connection.value.isConnected) break
+            while (isActive && _connection.value.isConnected && screenStatusFailures < 2) {
                 queryScreenState()
+                if (screenStatusFailures >= 2) break
+                delay(10_000L)
             }
         }
     }
@@ -899,13 +910,21 @@ class TvRepository(
         screenStateJob?.cancel()
         screenStateJob = null
         _tvScreenOn.value = null
+        // 不重置 screenStatusFailures：固件不支持是进程级事实，重连后不必再试
     }
 
     private suspend fun queryScreenState() {
         val client = udt ?: return
-        runCatching { TvApi(client).getDeviceStatus() }
-            .onSuccess { st -> st?.screenOn?.let { _tvScreenOn.value = it } }
+        val status = runCatching { TvApi(client).getDeviceStatus() }
             .onFailure { Log.w(TAG, "查询屏幕状态失败：${it.message}") }
+            .getOrNull()
+        val screenOn = status?.screenOn
+        if (screenOn != null) {
+            screenStatusFailures = 0
+            _tvScreenOn.value = screenOn
+        } else if (++screenStatusFailures >= 2) {
+            Log.i(TAG, "本机固件不提供 getDeviceStatus/isScreenOn，停止屏幕状态轮询（UI 双按钮兜底）")
+        }
     }
 
     private suspend fun enrichWakeMeta(base: TvDevice): TvDevice {
@@ -936,25 +955,53 @@ class TvRepository(
             notice("没有可开机的电视记录，请先在首页连接一次", true)
             return@withContext false
         }
-        // 实时从 mDNS 补全唤醒元数据（蓝牙 MAC / WOL / Wi-Fi MAC），
-        // 并用持久化记录兜底，覆盖「手动 IP 连接 / 电视已关机 mDNS 不可达」导致字段缺失的情况
+        // 红外电源码是「切换键」：10s 内重复点击必须忽略。
+        // v1.8.26 日志实证曾在 3.7s 内连发两帧红外，第二帧会把刚点亮的电视又关掉。
+        val now = System.currentTimeMillis()
+        if (now - lastIrFireAt < IR_COOLDOWN_MS) {
+            notice("已发射红外开机信号，电源为切换键，请稍候（10s 内重复点击已忽略）")
+            return@withContext true
+        }
+        // 新一轮唤醒先停掉上一轮的 BLE 广播/SPP 重试，避免多份广播并存
+        powerOnInstance?.stopWake()
+        powerOnInstance = null
+        powerOnJob?.cancel()
+
+        val po = PowerOn(appContext)
+        // 【关键优化】红外先行：不需要 mDNS 元数据、网络或权限，不等 4s 扫描。
+        // v1.8.26 日志实证红外是唯一生效路径：21:42:57.840 发射 → 57.874 电视 mDNS 服务丢失，
+        // 而 BLE(+93ms) / SPP(+915ms) 都在响应之后。点击到发射从 ~4.2s 降到 ~200ms。
+        val ir = po.fireIr()
+        if (ir.sent) {
+            lastIrFireAt = now
+            _tvPowerState.value = TvPowerState.WAKING
+            // 切换键结果不可知：屏幕态归位 unknown，UI 保持双按钮兜底
+            _tvScreenOn.value = null
+            Log.i(TAG, "红外开机信号已发射（原版主路径），跳过 BLE/SPP 避免双电源切换键")
+            notice("已发射红外开机信号（原版主路径）。电源为切换键，请勿重复点击；手机需对准电视。")
+            // 红外是切换键，不做「亮屏」断言；短展示窗口后回到网络可达性语义。
+            powerOnJob = scope.launch {
+                delay(IR_WAKING_MS)
+                _tvPowerState.value =
+                    if (_connection.value.isConnected) TvPowerState.REACHABLE else TvPowerState.UNREACHABLE
+            }
+            return@withContext true
+        }
+
+        // 红外不可用（无硬件或发射失败）→ 才走原版其余三路，此时才需要 mDNS 补全唤醒元数据
         val device = enrichWakeMeta(base)
         Log.i(TAG, "powerOn 设备元数据：host=${device.host} btMac=${device.btMac} wol=${device.wol} wifiMac=${device.wifiMac}")
-        // 重复点击「打开」：先停掉上一轮唤醒，避免多个 BLE 广播/SPP 任务并存
-        powerOnInstance?.stopWake()
-        // beginWake 立即返回：WOL 同步发，BLE/SPP 以后台任务持续尝试；结束后务必 stopWake
-        val po = PowerOn(appContext)
         powerOnInstance = po
-        val report = runCatching { po.beginWake(device) }
+        val report = runCatching { po.beginWake(device, ir) }
             .onFailure { Log.w(TAG, "开机唤醒启动失败：${it.message}") }
             .getOrElse { PowerOn.Report(false, false, false, false, false, false, listOf(it.message ?: "未知错误")) }
-        Log.i(TAG, "开机尝试：${report.summary}")
+        Log.i(TAG, "红外不可用，启用兜底唤醒：${report.summary}")
         if (!report.attempted) {
             po.stopWake()
             powerOnInstance = null
             notice(
-                "无法发起网络唤醒：${report.reasons.joinToString("；")}。" +
-                    "若电视处于息屏状态，请用电视遥控器或实体电源键唤醒。",
+                "无法发起唤醒：${report.reasons.joinToString("；")}。" +
+                    "请用电视遥控器或实体电源键开机。",
                 true,
             )
             return@withContext false
@@ -962,7 +1009,7 @@ class TvRepository(
         // 正在尝试唤醒的是「非亮屏」电视（息屏待机或已关机），乐观标记屏幕熄灭
         _tvScreenOn.value = false
         _tvPowerState.value = TvPowerState.WAKING
-        notice("已发送唤醒信号（${report.summary}），持续广播约 75s…")
+        notice("红外不可用，已启用兜底唤醒（${report.summary}），持续尝试约 75s…")
         // 集中由本任务驱动重连轮询，避免与既有重连循环打架
         reconnectJob?.cancel()
         reconnectJob = null
@@ -994,15 +1041,14 @@ class TvRepository(
                 if (_connection.value.isConnected) {
                     _tvPowerState.value = TvPowerState.REACHABLE
                     notice(
-                        "唤醒信号已持续发送 75s。若屏幕仍未亮起，请按电视实体电源键或遥控器开机；" +
+                        "兜底唤醒已持续发送 75s。若屏幕仍未亮起，请按电视实体电源键或遥控器开机；" +
                             "本机固件不支持屏幕状态查询，无法自动确认亮屏。",
                     )
                 } else {
                     _tvPowerState.value = TvPowerState.UNREACHABLE
                     notice(
-                        "75s 内未能恢复与电视的网络连接。" +
-                            "这台电视未广播 WOL/蓝牙唤醒信息，无法网络唤醒，请按实体电源键开机；" +
-                            "若电视实际已亮屏，请在首页手动连接。",
+                        "75s 内未能恢复与电视的网络连接，且本机红外不可用。" +
+                            "请按实体电源键开机；若电视实际已亮屏，请在首页手动连接。",
                         true,
                     )
                 }

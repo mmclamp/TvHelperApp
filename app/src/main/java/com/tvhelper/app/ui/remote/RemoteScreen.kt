@@ -618,8 +618,10 @@ private fun LabeledKey(
  * 必须靠 getDeviceStatus 的 isScreenOn 判断——这是原版 RemoteDeviceStatus 的做法。
  * - 电源（红）：已连(REACHABLE)且屏幕亮(screenOn!=false)时显示，发 KEYCODE_POWER 切换键（亮屏→关机/熄屏）。
  * - 打开（中性）：断网(UNREACHABLE)/唤醒中(WAKING)时显示；或已连但屏幕已熄(screenOn==false，息屏待机，
- *   注入键被固件静默丢弃)时显示，发起「红外 + WOL + BLE + 经典蓝牙」四路唤醒（对齐原版 openOrCloseDevice，
- *   红外为第一主力：不依赖网络/蓝牙，息屏/待机/关机都能亮屏）。屏幕态未知(screenOn==null)时两者都显示兜底。
+ *   注入键被固件静默丢弃)时显示。点击后**立即发红外**（原版第一主力，v1.8.26 真机实证唯一生效路径，
+ *   点击到发射 ~200ms）；只有红外不可用时才兜底启用 WOL/BLE/经典蓝牙。
+ *   红外是电源切换键，仓库层有 10s 冷却去抖，防连点「开了又关」。
+ *   屏幕态未知(screenOn==null，本机固件不提供 isScreenOn)时两者都显示兜底。
  */
 @Composable
 private fun PowerCluster(
@@ -644,7 +646,8 @@ private fun PowerCluster(
     ) { /* 权限结果仅影响后续 BLE/SPP 补充路径；红外已在本轮发出，不重复唤醒 */ }
 
     fun tryPowerOn() {
-        // 红外立即发射（不依赖网络/蓝牙/权限），息屏、待机、关机均可亮屏
+        // 红外立即发射（不依赖网络/蓝牙/权限），息屏、待机、关机均可亮屏；
+        // 仓库层 10s 冷却会忽略连点（电源为切换键，重复发会开了又关）
         vm.powerOn()
         // 顺带申请蓝牙权限，供本轮之后的 BLE/SPP 补充路径生效（非阻塞）
         if (btPerms.isNotEmpty() && btPerms.any {
@@ -709,8 +712,10 @@ private fun PowerCluster(
                 Text(
                     "电源键是「开/关屏」切换键：\n" +
                         "· 电视亮屏时：发送后关机/熄屏；\n" +
-                        "· 电视息屏/待机时：注入键会被固件静默丢弃（无效果），请改用「打开」按钮（红外为主，另附 BLE/蓝牙/WOL）；\n" +
-                        "· 电视已关机（网络断开）：电源键发不出去，请用「打开」按钮（WoL/BLE/蓝牙唤醒）。",
+                        "· 电视息屏/待机时：注入键会被固件静默丢弃（无效果），请改用「打开」按钮；\n" +
+                        "· 电视已关机（网络断开）：电源键发不出去，请用「打开」按钮。\n" +
+                        "「打开」会立即发红外电源码（原版主路径，手机需对准电视），红外不可用时才自动尝试 BLE/蓝牙/WOL。" +
+                        "电源为切换键，点一次即可，10s 内重复点击会被忽略。",
                 )
             },
             confirmButton = {

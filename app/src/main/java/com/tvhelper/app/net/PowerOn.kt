@@ -33,9 +33,14 @@ import java.util.UUID
  * 原版小米电视助手在电源键点击且设备未连接时走 `openOrCloseDevice` 四路并发
  * （逆向自 MilinkActivity）：红外 / BLE 广播 / 经典蓝牙 SPP / WOL。四路在此全部复刻：
  *
- * 0. **红外（第一主力）**：`r6/g.java` 用 `ConsumerIrManager.transmit(37920, pattern)` 发电源码，
+ * 0. **红外（第一主力，且先行）**：`r6/g.java` 用 `ConsumerIrManager.transmit(37920, pattern)` 发电源码，
  *    `r6/h.java` 的 24 段微秒时序重复 7 次。不依赖网络/蓝牙，息屏/待机/关机均可亮屏。
  *    此前误判「本项目手机无红外」而整个缺失，实际 OnePlus PLC110 有 consumer_ir——这是打不开的根因。
+ *    v1.8.26 真机日志实证：`21:42:57.840` 红外发射 → `57.874` 电视 mDNS 服务丢失（电视响应），
+ *    而 BLE 广播 `57.933`(+93ms)、SPP `58.755`(+915ms) 都在响应之后，**生效路径就是红外**。
+ *    故 1.8.27 起红外由 [fireIr] 先行发射（不等 4s mDNS 扫描），且发射成功后不再并发 BLE/SPP：
+ *    原版 `openOrCloseDevice` 的 SPP 分支本就带 `!isIRSupport(...)`，因为红外与 SPP 的 keycode 26
+ *    都是电源「切换」键，并发等于按两次电源，会把刚点亮的电视又关掉。
  * 1. **WOL**：mDNS TXT `wol` 标志为真时，向 255.255.255.255:40000 广播魔术包
  *    （6×0xFF + 16 次 Wi-Fi MAC），电视网卡收到即上电。
  * 2. **BLE 广播开机**：机型支持（蓝牙 MAC 已知 + 手机支持多播广播）时，手机以
@@ -45,7 +50,7 @@ import java.util.UUID
  * 3. **经典蓝牙 SPP**：RFCOMM 连电视蓝牙 MAC（UUID 8ce255c0-200a-11e0-ac64-0905200c1a6a），
  *    发 8 字节头 + JSON `{"cmd":"security","keycode":26}` 触发开机。
  *
- * 各路径均做能力探测：缺依赖（蓝牙 MAC / 权限 / 硬件支持）即跳过并记入 [PowerOnReport.reasons]，
+ * 各路径均做能力探测：缺依赖（蓝牙 MAC / 权限 / 硬件支持）即跳过并记入 [Report.reasons]，
  * 不抛异常。唤醒后由调用方（仓库重连循环）等待电视回连。
  *
  * 设计要点（修复点）：
@@ -106,24 +111,31 @@ class PowerOn(private val context: Context) {
     }
 
     /**
-     * 发起唤醒：WOL 同步发送（若支持），BLE 与 SPP 以后台任务持续尝试（不阻塞），
-     * 立即返回 [Report]（标记各路是否已发起）。调用方在唤醒成功/超时时务必调用 [stopWake]。
+     * 立即发射红外电源码（原版第一路，也是本机唯一被实证生效的路径）。
+     *
+     * 不需要设备元数据、网络、蓝牙或运行时权限，因此由调用方在 mDNS 扫描**之前**调用：
+     * 点击「打开」到真正发射的延迟从 ~4.2s（等 4s mDNS）降到 ~200ms（发射本身耗时）。
+     * 红外电源是切换键，调用方必须做冷却去抖，禁止连点连发。
+     */
+    fun fireIr(): IrPowerOn.Result =
+        runCatching { IrPowerOn(context).transmitPower() }
+            .onFailure { Log.w(TAG, "红外开机异常：${it.message}") }
+            .getOrElse { IrPowerOn.Result(false, false, it.message ?: "未知错误") }
+
+    /**
+     * 红外不可用时的兜底唤醒：WOL 同步发，BLE/SPP 后台持续尝试（不阻塞），立即返回 [Report]。
+     * [ir] 是已先行发射的红外结果；红外发射成功时跳过 BLE/SPP，避免双电源切换键互相抵消
+     * （依据原版 `MilinkActivity.java:1003` SPP 分支的 `!isIRSupport(...)` 条件）。
+     * 调用方在唤醒成功/超时时务必调用 [stopWake]。
      */
     @SuppressLint("MissingPermission")
-    fun beginWake(device: TvDevice): Report {
+    fun beginWake(device: TvDevice, ir: IrPowerOn.Result): Report {
         val reasons = mutableListOf<String>()
         // 关键修复：MAC 统一大写 + 去空格，否则 Android 校验小写 MAC 为非法地址使 SPP 必败
         val dev = device.copy(
             btMac = device.btMac?.trim()?.uppercase(),
             wifiMac = device.wifiMac?.trim()?.uppercase(),
         )
-
-        // ---- 0) 红外（原版第一路，也是最可靠的一路）----
-        // 不依赖网络/蓝牙，不受「息屏态注入键被固件丢弃」影响，息屏/待机/关机都能亮屏。
-        // 本机 OnePlus PLC110 有红外发射器；原版 openOrCloseDevice 把 isIRSupport 放在第一位。
-        val ir = runCatching { IrPowerOn(context).transmitPower() }
-            .onFailure { Log.w(TAG, "红外开机异常：${it.message}") }
-            .getOrElse { IrPowerOn.Result(false, false, it.message ?: "未知错误") }
         if (!ir.sent) reasons += "红外不可用：${ir.reason ?: "发射失败"}"
 
         // ---- 1) WOL ----
@@ -141,27 +153,30 @@ class PowerOn(private val context: Context) {
         }
 
         // ---- 2) BLE 广播（后台持续续播，直到 stopWake）----
-        val bleSupported = hasBleAdvertiseCapability(dev)
+        // 红外已生效时不再续播：本机实测 BLE 从未触发开机，却会占用蓝牙 75s、耗电且可能与红外抢触发。
+        val bleSupported = !ir.sent && hasBleAdvertiseCapability(dev)
         var bleSent = false
         if (bleSupported) {
             bleSent = true
             wakeJobs += scope.launch { runBleWake(dev.btMac!!) }
-        } else if (dev.btMac != null) {
+        } else if (dev.btMac != null && !ir.sent) {
             reasons += "手机不支持BLE广播或缺少BLUETOOTH_ADVERTISE权限（请开启蓝牙）"
         }
 
         // ---- 3) 经典蓝牙 SPP（后台重试）----
-        val btSupported = hasBluetoothConnect() && parseMac(dev.btMac) != null
+        // 原版 SPP 分支带 !isIRSupport：红外与 SPP 的 keycode 26 都是 POWER 切换键，
+        // 并发等于按两次电源，会把刚点亮的电视又关掉。
+        val btSupported = !ir.sent && hasBluetoothConnect() && parseMac(dev.btMac) != null
         var btSent = false
         if (btSupported) {
             btSent = true
             wakeJobs += scope.launch { runBtWake(dev.btMac!!) }
-        } else if (dev.btMac != null) {
+        } else if (dev.btMac != null && !ir.sent) {
             reasons += "缺少BLUETOOTH_CONNECT权限，无法经典蓝牙开机（请授权并开启蓝牙）"
         }
 
-        if (dev.btMac == null) reasons += "未获取到电视蓝牙MAC，BLE/蓝牙开机不可用"
-        if (!dev.wol) reasons += "电视未广播WOL支持，网络唤醒不可用"
+        if (dev.btMac == null && !ir.sent) reasons += "未获取到电视蓝牙MAC，BLE/蓝牙开机不可用"
+        if (!dev.wol && !ir.sent) reasons += "电视未广播WOL支持，网络唤醒不可用"
 
         return Report(
             wolSupported = wolSupported,
