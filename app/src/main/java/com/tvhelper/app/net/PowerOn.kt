@@ -31,9 +31,11 @@ import java.util.UUID
  * 从「已关机/息屏」状态唤醒电视。
  *
  * 原版小米电视助手在电源键点击且设备未连接时走 `openOrCloseDevice` 四路并发
- * （逆向自 MilinkActivity）：红外 / BLE 广播 / 经典蓝牙 SPP / WOL。
- * 其中红外需手机红外发射器（本项目手机无），其余三路在此复刻：
+ * （逆向自 MilinkActivity）：红外 / BLE 广播 / 经典蓝牙 SPP / WOL。四路在此全部复刻：
  *
+ * 0. **红外（第一主力）**：`r6/g.java` 用 `ConsumerIrManager.transmit(37920, pattern)` 发电源码，
+ *    `r6/h.java` 的 24 段微秒时序重复 7 次。不依赖网络/蓝牙，息屏/待机/关机均可亮屏。
+ *    此前误判「本项目手机无红外」而整个缺失，实际 OnePlus PLC110 有 consumer_ir——这是打不开的根因。
  * 1. **WOL**：mDNS TXT `wol` 标志为真时，向 255.255.255.255:40000 广播魔术包
  *    （6×0xFF + 16 次 Wi-Fi MAC），电视网卡收到即上电。
  * 2. **BLE 广播开机**：机型支持（蓝牙 MAC 已知 + 手机支持多播广播）时，手机以
@@ -88,10 +90,14 @@ class PowerOn(private val context: Context) {
         val btSent: Boolean,
         /** 各路径被跳过/失败的原因，便于 UI 提示用户为何没开起来 */
         val reasons: List<String>,
+        /** 红外（原版第一路）：带默认值以兼容旧构造点 */
+        val irSupported: Boolean = false,
+        val irSent: Boolean = false,
     ) {
-        val attempted: Boolean get() = wolSent || bleSent || btSent
+        val attempted: Boolean get() = irSent || wolSent || bleSent || btSent
         val summary: String
             get() = buildString {
+                append("IR${if (irSent) "✓" else "·"} ")
                 append("WOL${if (wolSent) "✓" else "·"} ")
                 append("BLE${if (bleSent) "✓" else "·"} ")
                 append("BT${if (btSent) "✓" else "·"}")
@@ -111,6 +117,14 @@ class PowerOn(private val context: Context) {
             btMac = device.btMac?.trim()?.uppercase(),
             wifiMac = device.wifiMac?.trim()?.uppercase(),
         )
+
+        // ---- 0) 红外（原版第一路，也是最可靠的一路）----
+        // 不依赖网络/蓝牙，不受「息屏态注入键被固件丢弃」影响，息屏/待机/关机都能亮屏。
+        // 本机 OnePlus PLC110 有红外发射器；原版 openOrCloseDevice 把 isIRSupport 放在第一位。
+        val ir = runCatching { IrPowerOn(context).transmitPower() }
+            .onFailure { Log.w(TAG, "红外开机异常：${it.message}") }
+            .getOrElse { IrPowerOn.Result(false, false, it.message ?: "未知错误") }
+        if (!ir.sent) reasons += "红外不可用：${ir.reason ?: "发射失败"}"
 
         // ---- 1) WOL ----
         val wolSupported = dev.wol && parseMac(dev.wifiMac) != null
@@ -157,6 +171,8 @@ class PowerOn(private val context: Context) {
             btSupported = btSupported,
             btSent = btSent,
             reasons = reasons.distinct(),
+            irSupported = ir.supported,
+            irSent = ir.sent,
         )
     }
 

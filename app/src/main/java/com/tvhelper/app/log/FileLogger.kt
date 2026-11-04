@@ -28,6 +28,9 @@ object FileLogger {
     private val filterTags = listOf(
         "TvRepository", "RcClient", "UdtClient", "TvViewModel",
         "ConnectionService", "ApkHttpServer", "FileLogger",
+        // 唤醒原语与服务状态：此前遗漏导致 BLE/SPP/IR 执行证据完全没落盘，
+        // 多轮误判为「协程没跑」。必须保留在白名单内。
+        "PowerOn", "IrPowerOn", "TvApi", "MdnsDiscovery",
     )
 
     @Volatile

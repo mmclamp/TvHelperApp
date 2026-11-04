@@ -618,7 +618,8 @@ private fun LabeledKey(
  * 必须靠 getDeviceStatus 的 isScreenOn 判断——这是原版 RemoteDeviceStatus 的做法。
  * - 电源（红）：已连(REACHABLE)且屏幕亮(screenOn!=false)时显示，发 KEYCODE_POWER 切换键（亮屏→关机/熄屏）。
  * - 打开（中性）：断网(UNREACHABLE)/唤醒中(WAKING)时显示；或已连但屏幕已熄(screenOn==false，息屏待机，
- *   注入键被固件静默丢弃)时显示，发起 BLE/经典蓝牙唤醒。屏幕态未知(screenOn==null，查询不支持)时两者都显示，唤醒兜底。
+ *   注入键被固件静默丢弃)时显示，发起「红外 + WOL + BLE + 经典蓝牙」四路唤醒（对齐原版 openOrCloseDevice，
+ *   红外为第一主力：不依赖网络/蓝牙，息屏/待机/关机都能亮屏）。屏幕态未知(screenOn==null)时两者都显示兜底。
  */
 @Composable
 private fun PowerCluster(
@@ -631,7 +632,8 @@ private fun PowerCluster(
     val context = LocalContext.current
     var confirmOff by remember { mutableStateOf(false) }
 
-    // 唤醒(打开)需要蓝牙权限（Android 12+ 运行时申请），用于 BLE 广播开机
+    // 蓝牙权限只影响 BLE 广播/经典蓝牙两路；红外（主力）无需运行时权限。
+    // 关键修复：不得用权限弹窗阻塞唤醒，否则红外的「息屏/关机也能亮屏」优势会被拖住甚至丢失。
     val btPerms = if (Build.VERSION.SDK_INT >= 31) listOf(
         Manifest.permission.BLUETOOTH_ADVERTISE,
         Manifest.permission.BLUETOOTH_CONNECT,
@@ -639,16 +641,17 @@ private fun PowerCluster(
     ) else emptyList()
     val permLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
-    ) { vm.powerOn() }
+    ) { /* 权限结果仅影响后续 BLE/SPP 补充路径；红外已在本轮发出，不重复唤醒 */ }
 
     fun tryPowerOn() {
+        // 红外立即发射（不依赖网络/蓝牙/权限），息屏、待机、关机均可亮屏
+        vm.powerOn()
+        // 顺带申请蓝牙权限，供本轮之后的 BLE/SPP 补充路径生效（非阻塞）
         if (btPerms.isNotEmpty() && btPerms.any {
                 ContextCompat.checkSelfPermission(context, it) != android.content.pm.PackageManager.PERMISSION_GRANTED
             }
         ) {
             permLauncher.launch(btPerms.toTypedArray())
-        } else {
-            vm.powerOn()
         }
     }
 
@@ -706,7 +709,7 @@ private fun PowerCluster(
                 Text(
                     "电源键是「开/关屏」切换键：\n" +
                         "· 电视亮屏时：发送后关机/熄屏；\n" +
-                        "· 电视息屏/待机时：注入键会被固件静默丢弃（无效果），请改用「打开」按钮（BLE/蓝牙唤醒）；\n" +
+                        "· 电视息屏/待机时：注入键会被固件静默丢弃（无效果），请改用「打开」按钮（红外为主，另附 BLE/蓝牙/WOL）；\n" +
                         "· 电视已关机（网络断开）：电源键发不出去，请用「打开」按钮（WoL/BLE/蓝牙唤醒）。",
                 )
             },
