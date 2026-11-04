@@ -647,7 +647,8 @@ private fun LabeledKey(
  * 我们因 UDT 在息屏不断连、固件又不提供 isScreenOn，无法用连接态区分亮/息屏；
  * 分流下沉到仓库层 power()：明确亮屏走 UDT 注入，其余走红外切换键
  * （v1.8.26 真机实证唯一生效路径），红外不可用时自动兜底 WOL/BLE/SPP。
- * 电源是切换键：亮屏按=关屏、息屏/关机按=亮屏，仓库层 5s 冷却 + 按钮本体倒计时遮罩防连点「开了又关」。
+ * 分流由仓库层本地屏幕状态机决定：推断亮屏且已连 → 网络注入关机；其余 → 红外开机码唤醒。
+ * 仓库层 3s 冷却 + 按钮本体倒计时遮罩防连点「开了又关」。
  */
 @Composable
 private fun PowerButton(vm: TvViewModel, palette: RemotePalette) {
@@ -734,7 +735,7 @@ private fun PowerButton(vm: TvViewModel, palette: RemotePalette) {
         // 冷却/忽略提示直接占用原来的「电源」标签位，不额外弹层
         Text(
             text = when {
-                shakeHint -> "5s 内忽略"
+                shakeHint -> "3s 内忽略"
                 remainingMs > 0L -> "已发送 ${ceil(remainingMs / 1000f).toInt().coerceAtLeast(1)}s"
                 else -> "电源"
             },

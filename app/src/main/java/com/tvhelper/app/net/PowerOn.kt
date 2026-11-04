@@ -115,7 +115,7 @@ class PowerOn(private val context: Context) {
      *
      * 不需要设备元数据、网络、蓝牙或运行时权限，因此由调用方在 mDNS 扫描**之前**调用：
      * 点击「打开」到真正发射的延迟从 ~4.2s（等 4s mDNS）降到 ~200ms（发射本身耗时）。
-     * 红外电源是切换键，调用方必须做冷却去抖，禁止连点连发。
+     * 红外电源码用于唤醒（原版埋点 PowerOnIr），调用方必须做冷却去抖，禁止连点连发。
      */
     fun fireIr(): IrPowerOn.Result =
         runCatching { IrPowerOn(context).transmitPower() }

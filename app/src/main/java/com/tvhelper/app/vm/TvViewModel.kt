@@ -64,7 +64,7 @@ class TvViewModel(
     /** 电视屏幕是否点亮（true=亮屏 / false=息屏待机 / null=未知），驱动「电源」(注入) vs「打开」(唤醒) 分流 */
     val tvScreenOn: StateFlow<Boolean?> = repo.tvScreenOn
 
-    /** 电源键冷却截止时刻（驱动遥控页 5s 倒计时遮罩） */
+    /** 电源键冷却截止时刻（驱动遥控页 3s 倒计时遮罩） */
     val powerCooldownUntil: StateFlow<Long> = repo.powerCooldownUntil
 
     private val _powerTapEvent = MutableSharedFlow<PowerTapResult>(extraBufferCapacity = 8)

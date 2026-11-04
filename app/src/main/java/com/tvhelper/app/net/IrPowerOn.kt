@@ -22,7 +22,9 @@ import android.util.Log
  * （OnePlus PLC110，`pm list features` 含 android.hardware.consumerir，服务 consumer_ir 存在），
  * 这正是原版在息屏/关机态能开机的主力路径。
  *
- * 注意：红外电源键是**切换键**，绝对不能连发多个电源码（会开了又关）。
+ * 注意：原版把这枚码当**唤醒码**用（埋点 `AssistantStatisticManagerV2.n("RC", "PowerOnIr")`，
+ * `MilinkActivity:441`），v1.8.30 真机实测「能开机、关机不了」也印证亮屏时它不触发关机；
+ * 关机必须走网络注入 POWER。绝对不能连发多个电源码（会开了又关）。
  * 这里严格对齐原版主路径，只发一帧 `c()`；`transmit` 抛异常表示未发出，才尝试备用时序。
  */
 class IrPowerOn(private val context: Context) {
