@@ -54,6 +54,8 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
 
 /** 单电源按钮点击结果：驱动 3s 倒计时遮罩与「重复点击」抖动提示 */
@@ -83,6 +85,13 @@ class TvRepository(
          *  v1.8.26 日志实证曾在 3.7s 内连发两帧红外（21:42:57.840 / 21:43:01.497）。
          *  v1.8.29 起与 UI 倒计时遮罩统一；v1.8.31 按用户要求从 5s 缩短为 3s。 */
         const val IR_COOLDOWN_MS = 3_000L
+
+        /** 电视主控服务端口：原版 WOLManager.c() 的 TCP 探活目标，也是 6095/request?action=isalive、
+         *  setVolum、checksocial 等 HTTP 控制接口所在端口。息屏/深待机时该 Java 层服务随主系统挂起。 */
+        const val CONTROL_PORT = 6095
+
+        /** 探活连接超时。点击电源键只增加这段延迟，绝不阻塞其它按键。 */
+        const val CONTROL_PROBE_TIMEOUT_MS = 400
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -873,18 +882,18 @@ class TvRepository(
      * 未连 → `powerOn(pdd,false)` 四路唤醒（红外第一）+ `reconnectDevice(30)` 后台重连；
      * 已连 → `getMiRCUI().p(26)` 注入 POWER 切换屏。**没有「开机中」中间态、不禁用按钮**。
      *
-     * 我们的 UDT/RC 通道在息屏态不断连（原版 Airkan 会断），且本机固件不提供 isScreenOn
-     * （getDeviceStatus 恒 status=1），协议层无法区分亮/息屏。但有一件事是确定的：
-     * **原版红外的埋点就叫 `PowerOnIr`（MilinkActivity:441），红外码只负责唤醒；关机必须走
-     * 网络注入 POWER（p(26) / powerOffByWifiConnect）**。v1.8.28~30 把 `_tvScreenOn` 清成 null
-     * 且永不被赋值，导致 `powerOff()` 是死代码，每次点击都发「开机码」→ 用户反馈「能开机、关机不了」。
+     * 原版能这么做的底气是「连接态」自带电源信息：Airkan 在待机时会断开；
+     * 变体遥控页 `MiboxRCWithPosterBannerActivity:483-509` 更直接，把 TCP :6095 的
+     * `WOLManager.c(ip)` 探活当 isAlive 用，发完 p(26) 后循环探活确认关机生效。
      *
-     * v1.8.31 起改为本地乐观屏幕状态机：不再依赖固件查询，由电源动作本身驱动状态，
-     * 且连接/断线重连不再把它清空：
-     * - 推断亮屏(screenOn==true)且已连 → UDT 注入 POWER 关屏（原版路径），成功后置 false；
-     * - 其余（unknown / 息屏 / 关机 / 断网）→ 红外开机码（v1.8.26 实证唯一生效唤醒路径），
-     *   成功后置 true；红外不可用时兜底 WOL/BLE/SPP。
-     * 外部用实体遥控器开关机会让推断短暂失同步，此时再点一次（3s 冷却后）即可自我纠正。
+     * 我们过去只测了 30612/6093/9093（息屏也全通），误以为「协议层无法区分亮/息屏」，
+     * 于是 v1.8.31 用本地行动记账推断屏幕状态 —— 能工作但会与实体遥控器/自动休眠失同步。
+     * v1.8.32 起补上 :6095 探活：通=电视主系统在线→注入 POWER 关机；不通→红外唤醒。
+     * 本地推断只在 6095 探测不可用时兜底，保证不开放该端口的机型行为不比 v1.8.31 更差。
+     *
+     * 红外码只负责唤醒（原版埋点 `PowerOnIr`，MilinkActivity:441），亮屏时不会关屏，
+     * 所以「开机=红外、关机=网络注入」两条路径必须分开。v1.8.28~30 曾把 `_tvScreenOn`
+     * 清成 null 且永不赋值，导致 `powerOff()` 是死代码 → 用户反馈「能开机、关机不了」。
      */
     suspend fun power(): PowerTapResult {
         val now = System.currentTimeMillis()
@@ -893,13 +902,52 @@ class TvRepository(
             return PowerTapResult.COOLDOWN
         }
         val connected = _connection.value.isConnected
-        val screenOn = _tvScreenOn.value == true
-        Log.i(TAG, "电源键分流：connected=$connected screenOn=${_tvScreenOn.value} → ${if (screenOn && connected) "UDT 注入关机" else "红外唤醒"}")
-        val ok = if (screenOn && connected) powerOff() else powerOn()
+        val host = _connection.value.device?.host ?: _pairing.value.host
+        // 一次短超时 TCP 探活，拿电视主系统的真实现状（对齐原版 isAlive）
+        val alive = host?.let { probeControlService(it) }
+        val localOn = _tvScreenOn.value == true
+        // 6095 通 = 确定可注入；探测不可用时退回本地推断，兼容固件不开放该端口的情况
+        val inject = connected && (alive == true || (alive != true && localOn))
+        val action = if (inject) "UDT 注入关机" else "红外唤醒"
+        Log.i(TAG, "电源键分流：connected=$connected alive6095=$alive localScreenOn=${_tvScreenOn.value} → $action")
+        val ok = if (inject) powerOff() else powerOn()
         if (!ok) return PowerTapResult.FAILED
+        // 动作后异步复探：留下取证日志，并把本地推断拉回真实状态（原版 isAliveAfterPower 思路）
+        if (host != null) probeAfterAction(host, action, applyState = inject)
         // 发射成功即起遮罩：与冷却同长，避免「看着能点却没发」的错位
         _powerCooldownUntil.value = System.currentTimeMillis() + IR_COOLDOWN_MS
         return PowerTapResult.FIRED
+    }
+
+    /**
+     * 电视主控服务探活：TCP :6095（原版 WOLManager.c() / AirkanService isalive 所在端口）。
+     * 息屏/深待机时 6093/9093/6091 由 native 守护进程保持可连（回 success 但按键被丢弃），
+     * 而 6095 的 Java 层控制服务随主系统挂起 → 端口关闭。这正是原版决定「发 26 还是唤醒」的信号。
+     */
+    private suspend fun probeControlService(host: String): Boolean = withContext(Dispatchers.IO) {
+        val socket = Socket()
+        runCatching {
+            socket.connect(InetSocketAddress(host, CONTROL_PORT), CONTROL_PROBE_TIMEOUT_MS)
+            socket.isConnected
+        }.getOrDefault(false).also { runCatching { socket.close() } }
+    }
+
+    /** 动作后异步复探 6095，校正本地屏幕推断并留下取证日志；不阻塞本次点击。 */
+    private fun probeAfterAction(host: String, tag: String, applyState: Boolean) {
+        scope.launch {
+            delay(1_500L)
+            var alive = probeControlService(host)
+            if (tag == "红外唤醒" && !alive) {
+                // 电视开机较慢，最多再等 ~10s 观察 6095 是否随主系统起来
+                for (i in 0 until 10) {
+                    delay(1_000L)
+                    alive = probeControlService(host)
+                    if (alive) break
+                }
+            }
+            Log.i(TAG, "$tag 后 :6095 探活=$alive")
+            if (applyState) _tvScreenOn.value = alive
+        }
     }
 
     /**
@@ -920,11 +968,12 @@ class TvRepository(
     }
 
     // ------------------------------------------------------------ 屏幕状态轮询
-    // 协议层无法靠网络可达性区分「亮屏」与「息屏待机」（二者网络都通），但息屏时注入键被固件
-    // 静默丢弃。若固件支持 getDeviceStatus/isScreenOn，查询到的真实值优先覆盖本地推断。
+    // 30612/6093/9093 在息屏待机时仍可连（早期误以为「协议层无法区分亮/息屏」），但按键被
+    // 主系统挂起后静默丢弃；真正的状态信号是 :6095 主控服务（v1.8.32 起 power() 直接探活）。
+    // 这里保留 getDeviceStatus/isScreenOn 轮询：若固件支持，真实值优先覆盖本地推断。
     // 但本机 L65MA-XT 固件恒返回 status=1（反编译树里只有 SocialRequest 接口声明），
     // 每 10s 发一个 639 字节加密包纯属无效流量；连续 2 次拿不到 isScreenOn 即熔断轮询。
-    // 熔断后**不清空** _tvScreenOn：v1.8.31 起它由电源动作驱动的本地状态机维护，
+    // 熔断后**不清空** _tvScreenOn：它仍是 6095 探测不可用时的兜底状态，
     // 否则每次重连都会把状态抹成 null，power() 永远只发红外开机码 → 关不了机。
 
     private fun startScreenStatePolling() {
