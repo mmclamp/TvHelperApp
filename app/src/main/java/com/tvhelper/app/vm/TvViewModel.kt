@@ -13,6 +13,7 @@ import com.tvhelper.app.data.InstallState
 import com.tvhelper.app.data.Notice
 import com.tvhelper.app.data.PairingState
 import com.tvhelper.app.data.PinnedApp
+import com.tvhelper.app.data.PowerTapResult
 import com.tvhelper.app.data.SettingsStore
 import com.tvhelper.app.data.TvDevice
 import com.tvhelper.app.data.TvPowerState
@@ -31,7 +32,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -60,6 +63,14 @@ class TvViewModel(
 
     /** 电视屏幕是否点亮（true=亮屏 / false=息屏待机 / null=未知），驱动「电源」(注入) vs「打开」(唤醒) 分流 */
     val tvScreenOn: StateFlow<Boolean?> = repo.tvScreenOn
+
+    /** 电源键冷却截止时刻（驱动遥控页 5s 倒计时遮罩） */
+    val powerCooldownUntil: StateFlow<Long> = repo.powerCooldownUntil
+
+    private val _powerTapEvent = MutableSharedFlow<PowerTapResult>(extraBufferCapacity = 8)
+
+    /** 每次点击电源键的结果：FIRED=发射成功 / COOLDOWN=冷却中（触发抖动）/ FAILED=无设备或发射失败 */
+    val powerTapEvent: SharedFlow<PowerTapResult> = _powerTapEvent
 
     val pinnedApps: StateFlow<List<PinnedApp>> =
         repo.pinnedApps.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -320,7 +331,7 @@ class TvViewModel(
      * 走红外切换键（亮/息/关机都能切）+ 红外不可用时兜底 BLE/SPP/WOL。
      */
     fun power() {
-        viewModelScope.launch { repo.power() }
+        viewModelScope.launch { _powerTapEvent.emit(repo.power()) }
     }
 
     /**

@@ -3,6 +3,8 @@ package com.tvhelper.app.ui.remote
 import android.Manifest
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -12,11 +14,10 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -24,19 +25,18 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -51,10 +51,13 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.tvhelper.app.data.ConnectionState
+import com.tvhelper.app.data.PowerTapResult
+import com.tvhelper.app.data.TvRepository
 import com.tvhelper.app.protocol.rc.RcTouchCodec
 import com.tvhelper.app.protocol.rc.TvKey
 import com.tvhelper.app.ui.common.PillButton
@@ -63,6 +66,8 @@ import com.tvhelper.app.ui.common.StatusDot
 import com.tvhelper.app.ui.common.TvCard
 import com.tvhelper.app.ui.theme.TvColors
 import com.tvhelper.app.vm.TvViewModel
+import kotlin.math.ceil
+import kotlinx.coroutines.delay
 
 /** 触控板映射到的虚拟电视分辨率（AirKan 触摸是绝对坐标） */
 private const val VIRTUAL_W = 1920f
@@ -124,91 +129,176 @@ fun RemoteScreen(vm: TvViewModel, onGoConnect: () -> Unit = {}) {
     val palette = remotePalette()
     var trackpadMode by remember { mutableStateOf(false) }
 
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(palette.bg),
-        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 20.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        item { RemoteHeader(connection, palette) }
+    // 电源键 5s 冷却：倒计时遮罩 + 重复点击抖动提示
+    val cooldownUntil by vm.powerCooldownUntil.collectAsState()
+    var remainingMs by remember { mutableStateOf(0L) }
+    var shakeKey by remember { mutableStateOf(0) }
+    var shakeHint by remember { mutableStateOf(false) }
+    val shakeX = remember { Animatable(0f) }
 
-        // 未连接：整页控件禁用前先给出行动指引
-        if (!connected) {
-            item {
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(16.dp),
-                    color = palette.panel,
-                ) {
-                    Button(
-                        onClick = onGoConnect,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(14.dp),
-                    ) { Text("去连接电视") }
+    LaunchedEffect(cooldownUntil) {
+        while (cooldownUntil > System.currentTimeMillis()) {
+            remainingMs = cooldownUntil - System.currentTimeMillis()
+            delay(80L)
+        }
+        remainingMs = 0L
+        shakeHint = false
+    }
+    LaunchedEffect(shakeKey) {
+        if (shakeKey == 0) return@LaunchedEffect
+        repeat(3) { i ->
+            shakeX.animateTo(if (i % 2 == 0) 10f else -10f, tween(45))
+            shakeX.animateTo(0f, tween(45))
+        }
+    }
+    LaunchedEffect(Unit) {
+        vm.powerTapEvent.collect { result ->
+            when (result) {
+                PowerTapResult.COOLDOWN -> {
+                    shakeHint = true
+                    shakeKey++
                 }
+                PowerTapResult.FIRED, PowerTapResult.FAILED -> shakeHint = false
             }
         }
+    }
 
-        // 主控面板：一块悬浮深灰面板，承载全部遥控控件（对标参考图的整体卡片）
-        item {
+    // 单屏布局：所有控件一页放完、不再滚动；方向键/触控板区用 weight 吃掉剩余高度并自适应尺寸
+    Box(Modifier.fillMaxSize().background(palette.bg)) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            RemoteHeader(connection, palette, onGoConnect = if (connected) null else onGoConnect)
+
             Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(28.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                shape = RoundedCornerShape(24.dp),
                 color = palette.panel,
             ) {
                 Column(
                     Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
+                        .fillMaxSize()
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    // 模式切换：按键 / 触控板（极简胶囊）
                     ModeToggle(
                         trackpadMode = trackpadMode,
                         onKey = { trackpadMode = false },
                         onPad = { trackpadMode = true },
                         palette = palette,
                     )
+                    QuickRow(vm = vm, enabled = connected, muted = tvMuted, palette = palette)
+                    VolumeBar(vol = tvVolume, max = tvVolumeMax, muted = tvMuted, enabled = connected, palette = palette)
 
-                    // 快捷行：电源 / 静音 / 音量减 / 音量加（四枚等距中性圆钮）
-                    QuickRow(
-                        vm = vm,
-                        enabled = connected,
-                        muted = tvMuted,
-                        palette = palette,
-                    )
-
-                    // 音量条：细线 + 圆点滑块，两端显示当前/最大（对标参考图进度条语言）
-                    VolumeBar(
-                        vol = tvVolume,
-                        max = tvVolumeMax,
-                        muted = tvMuted,
-                        enabled = connected,
-                        palette = palette,
-                    )
-
-                    if (trackpadMode) {
-                        Trackpad(enabled = connected, vm = vm, palette = palette)
-                    } else {
-                        DPad(vm = vm, enabled = connected, palette = palette)
+                    BoxWithConstraints(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        val dpadSize = minOf(maxWidth, maxHeight, 216.dp)
+                        val padHeight = minOf(maxWidth * 9f / 16f, maxHeight, 216.dp)
+                        if (trackpadMode) {
+                            Trackpad(enabled = connected, vm = vm, palette = palette, height = padHeight)
+                        } else {
+                            DPad(vm = vm, enabled = connected, palette = palette, diameter = dpadSize)
+                        }
                     }
 
-                    // 底部键行：主页（圆）· 返回（宽胶囊）· 菜单（圆）
                     BottomRow(vm = vm, enabled = connected, palette = palette)
-
-                    // 播放控制：上一集 / 播放暂停 / 下一集
                     PlaybackRow(vm = vm, enabled = connected, palette = palette)
                 }
             }
+        }
+
+        if (remainingMs > 0L) {
+            PowerCooldownOverlay(
+                remainingMs = remainingMs,
+                shakeX = shakeX.value,
+                shakeHint = shakeHint,
+                palette = palette,
+                onTap = { vm.power() },
+            )
+        }
+    }
+}
+
+/**
+ * 电源键倒计时遮罩：发射后覆盖 5s，圆环 + 秒数；冷却中再次点击（点卡片或下方电源键）
+ * 会触发卡片左右抖动并提示「5s 内重复点击已忽略」。遮罩本身不拦截其它按键的触摸，
+ * 仅视觉压暗，避免 5s 内连方向键都用不了。
+ */
+@Composable
+private fun PowerCooldownOverlay(
+    remainingMs: Long,
+    shakeX: Float,
+    shakeHint: Boolean,
+    palette: RemotePalette,
+    onTap: () -> Unit,
+) {
+    val seconds = ceil(remainingMs / 1000f).toInt().coerceAtLeast(1)
+    val progress = (remainingMs.toFloat() / TvRepository.IR_COOLDOWN_MS).coerceIn(0f, 1f)
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(Color(0x99000000)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            Modifier
+                .offset(x = shakeX.dp)
+                .clip(RoundedCornerShape(24.dp))
+                .background(palette.panel)
+                .clickable(onClick = onTap)
+                .padding(horizontal = 32.dp, vertical = 24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Box(Modifier.size(88.dp), contentAlignment = Alignment.Center) {
+                androidx.compose.foundation.Canvas(Modifier.fillMaxSize()) {
+                    val stroke = 6.dp.toPx()
+                    val inset = stroke / 2f
+                    val arcSize = androidx.compose.ui.geometry.Size(size.width - stroke, size.height - stroke)
+                    val topLeft = Offset(inset, inset)
+                    val arcStyle = androidx.compose.ui.graphics.drawscope.Stroke(width = stroke)
+                    drawArc(
+                        color = palette.hairline, startAngle = -90f, sweepAngle = 360f,
+                        useCenter = false, topLeft = topLeft, size = arcSize, style = arcStyle,
+                    )
+                    drawArc(
+                        color = TvColors.danger, startAngle = -90f, sweepAngle = 360f * progress,
+                        useCenter = false, topLeft = topLeft, size = arcSize, style = arcStyle,
+                    )
+                }
+                Text(
+                    "$seconds",
+                    style = MaterialTheme.typography.headlineLarge,
+                    color = palette.okGlyph,
+                    fontWeight = FontWeight.Medium,
+                )
+            }
+            Text(
+                if (shakeHint) "5s 内重复点击已忽略" else "已发送电源键",
+                style = MaterialTheme.typography.titleSmall,
+                color = if (shakeHint) TvColors.danger else palette.okGlyph,
+            )
+            Text(
+                "电源是切换键，${seconds}s 后可再次操作",
+                style = MaterialTheme.typography.bodySmall,
+                color = palette.label,
+            )
         }
     }
 }
 
 @Composable
-private fun RemoteHeader(connection: ConnectionState, palette: RemotePalette) {
+private fun RemoteHeader(connection: ConnectionState, palette: RemotePalette, onGoConnect: (() -> Unit)? = null) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
@@ -222,6 +312,19 @@ private fun RemoteHeader(connection: ConnectionState, palette: RemotePalette) {
             color = if (connection.isConnected) palette.okGlyph else palette.label,
             modifier = Modifier.weight(1f),
         )
+        // 未连接时的行动指引收进标题栏，不再占独立一行（单屏布局）
+        if (onGoConnect != null) {
+            Text(
+                "去连接",
+                style = MaterialTheme.typography.labelSmall,
+                color = TvColors.danger,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .clickable(onClick = onGoConnect)
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
+            )
+            Spacer(Modifier.width(8.dp))
+        }
         // 连接状态胶囊：在线绿 / 离线灰
         val chipBg = if (connection.isConnected) TvColors.online else palette.keyFill
         val chipFg = if (connection.isConnected) Color.White else palette.label
@@ -271,7 +374,7 @@ private fun ModeChip(text: String, selected: Boolean, onClick: () -> Unit, palet
             .clip(RoundedCornerShape(50))
             .background(bg)
             .clickable(onClick = onClick)
-            .padding(horizontal = 20.dp, vertical = 7.dp),
+            .padding(horizontal = 20.dp, vertical = 5.dp),
         contentAlignment = Alignment.Center,
     ) {
         Text(text, style = MaterialTheme.typography.labelMedium, color = fg, fontWeight = FontWeight.Medium)
@@ -356,7 +459,7 @@ private fun VolumeBar(
         Box(
             Modifier
                 .weight(1f)
-                .height(36.dp)
+                .height(28.dp)
                 .onSizeChanged { trackW = it.width },
             contentAlignment = Alignment.CenterStart,
         ) {
@@ -401,48 +504,52 @@ private fun VolumeBar(
  * - 上/下/左/右为放大的圆形热区 + 自绘方向箭头（清晰且易点），各自仍是完整可点区域。
  */
 @Composable
-private fun DPad(vm: TvViewModel, enabled: Boolean, palette: RemotePalette) {
+private fun DPad(vm: TvViewModel, enabled: Boolean, palette: RemotePalette, diameter: Dp = 216.dp) {
+    // 单屏布局：整盘随可用高度缩放，内部热区按直径比例同步缩小
+    val keySize = (diameter.value * 0.24f).toInt()
+    val okSize = (diameter.value * 0.32f).toInt()
+    val arrowSize = diameter * 0.10f
     Box(
         Modifier
-            .size(256.dp)
+            .size(diameter)
             .clip(CircleShape)
             .background(palette.panel)
             .border(1.dp, palette.hairline, CircleShape),
         contentAlignment = Alignment.Center,
     ) {
         // 上
-        Box(Modifier.align(Alignment.TopCenter).padding(top = 12.dp)) {
+        Box(Modifier.align(Alignment.TopCenter).padding(top = 8.dp)) {
             RepeatKeyButton(
-                vm, TvKey.DPAD_UP, enabled, palette, size = 62,
+                vm, TvKey.DPAD_UP, enabled, palette, size = keySize,
                 container = Color.Transparent, contentColor = palette.keyGlyph,
-            ) { ArrowGlyph(Direction.UP, palette.keyGlyph, Modifier.size(22.dp)) }
+            ) { ArrowGlyph(Direction.UP, palette.keyGlyph, Modifier.size(arrowSize)) }
         }
         // 下
-        Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp)) {
+        Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp)) {
             RepeatKeyButton(
-                vm, TvKey.DPAD_DOWN, enabled, palette, size = 62,
+                vm, TvKey.DPAD_DOWN, enabled, palette, size = keySize,
                 container = Color.Transparent, contentColor = palette.keyGlyph,
-            ) { ArrowGlyph(Direction.DOWN, palette.keyGlyph, Modifier.size(22.dp)) }
+            ) { ArrowGlyph(Direction.DOWN, palette.keyGlyph, Modifier.size(arrowSize)) }
         }
         // 左
-        Box(Modifier.align(Alignment.CenterStart).padding(start = 12.dp)) {
+        Box(Modifier.align(Alignment.CenterStart).padding(start = 8.dp)) {
             RepeatKeyButton(
-                vm, TvKey.DPAD_LEFT, enabled, palette, size = 62,
+                vm, TvKey.DPAD_LEFT, enabled, palette, size = keySize,
                 container = Color.Transparent, contentColor = palette.keyGlyph,
-            ) { ArrowGlyph(Direction.LEFT, palette.keyGlyph, Modifier.size(22.dp)) }
+            ) { ArrowGlyph(Direction.LEFT, palette.keyGlyph, Modifier.size(arrowSize)) }
         }
         // 右
-        Box(Modifier.align(Alignment.CenterEnd).padding(end = 12.dp)) {
+        Box(Modifier.align(Alignment.CenterEnd).padding(end = 8.dp)) {
             RepeatKeyButton(
-                vm, TvKey.DPAD_RIGHT, enabled, palette, size = 62,
+                vm, TvKey.DPAD_RIGHT, enabled, palette, size = keySize,
                 container = Color.Transparent, contentColor = palette.keyGlyph,
-            ) { ArrowGlyph(Direction.RIGHT, palette.keyGlyph, Modifier.size(22.dp)) }
+            ) { ArrowGlyph(Direction.RIGHT, palette.keyGlyph, Modifier.size(arrowSize)) }
         }
         // 中央 OK
         RoundButton(
             onPress = { vm.sendKey(TvKey.DPAD_CENTER) },
             enabled = enabled,
-            size = 82,
+            size = okSize,
             container = palette.okFill,
             contentColor = palette.okGlyph,
             pressColor = palette.keyFillPressed,
@@ -484,7 +591,7 @@ private fun BottomRow(vm: TvViewModel, enabled: Boolean, palette: RemotePalette)
         RoundButton(
             onPress = { vm.sendKey(TvKey.HOME) },
             enabled = enabled,
-            size = 56,
+            size = 48,
             container = palette.keyFill,
             contentColor = palette.keyGlyph,
             pressColor = palette.keyFillPressed,
@@ -500,7 +607,7 @@ private fun BottomRow(vm: TvViewModel, enabled: Boolean, palette: RemotePalette)
         RoundButton(
             onPress = { vm.sendKey(TvKey.MENU) },
             enabled = enabled,
-            size = 56,
+            size = 48,
             container = palette.keyFill,
             contentColor = palette.keyGlyph,
             pressColor = palette.keyFillPressed,
@@ -518,7 +625,7 @@ private fun PlaybackRow(vm: TvViewModel, enabled: Boolean, palette: RemotePalett
         RoundButton(
             onPress = { vm.sendKey(TvKey.MEDIA_PREVIOUS) },
             enabled = enabled,
-            size = 56,
+            size = 48,
             container = palette.keyFill,
             contentColor = palette.keyGlyph,
             pressColor = palette.keyFillPressed,
@@ -526,7 +633,7 @@ private fun PlaybackRow(vm: TvViewModel, enabled: Boolean, palette: RemotePalett
         RoundButton(
             onPress = { vm.sendKey(TvKey.MEDIA_PLAY_PAUSE) },
             enabled = enabled,
-            size = 72,
+            size = 60,
             container = palette.keyFill,
             contentColor = palette.keyGlyph,
             pressColor = palette.keyFillPressed,
@@ -534,7 +641,7 @@ private fun PlaybackRow(vm: TvViewModel, enabled: Boolean, palette: RemotePalett
         RoundButton(
             onPress = { vm.sendKey(TvKey.MEDIA_NEXT) },
             enabled = enabled,
-            size = 56,
+            size = 48,
             container = palette.keyFill,
             contentColor = palette.keyGlyph,
             pressColor = palette.keyFillPressed,
@@ -590,12 +697,12 @@ private fun LabeledKey(
         RoundButton(
             onPress = onPress,
             enabled = enabled,
-            size = 58,
+            size = 50,
             container = container,
             contentColor = contentColor,
             pressColor = pressColor,
         ) { content() }
-        Spacer(Modifier.height(4.dp))
+        Spacer(Modifier.height(2.dp))
         Text(label, style = MaterialTheme.typography.labelSmall, color = palette.label)
     }
 }
@@ -609,7 +716,7 @@ private fun LabeledKey(
  * 我们因 UDT 在息屏不断连、固件又不提供 isScreenOn，无法用连接态区分亮/息屏；
  * 分流下沉到仓库层 power()：明确亮屏走 UDT 注入，其余走红外切换键
  * （v1.8.26 真机实证唯一生效路径），红外不可用时自动兜底 WOL/BLE/SPP。
- * 电源是切换键：亮屏按=关屏、息屏/关机按=亮屏，仓库层 10s 冷却防连点「开了又关」。
+ * 电源是切换键：亮屏按=关屏、息屏/关机按=亮屏，仓库层 5s 冷却 + 遥控页倒计时遮罩防连点「开了又关」。
  */
 @Composable
 private fun PowerButton(vm: TvViewModel, palette: RemotePalette) {
@@ -641,13 +748,13 @@ private fun PowerButton(vm: TvViewModel, palette: RemotePalette) {
             onPress = {},
             onRelease = { firePower() },
             enabled = true,
-            size = 52,
+            size = 48,
             container = TvColors.danger.copy(alpha = 0.16f),
             contentColor = TvColors.danger,
             borderColor = TvColors.danger.copy(alpha = 0.4f),
             pressColor = TvColors.danger,
         ) { PowerIcon(tint = TvColors.danger, modifier = Modifier.size(24.dp)) }
-        Spacer(Modifier.height(4.dp))
+        Spacer(Modifier.height(2.dp))
         Text("电源", style = MaterialTheme.typography.labelSmall, color = palette.label)
     }
 }
@@ -727,7 +834,7 @@ private fun PowerIcon(tint: Color, modifier: Modifier = Modifier) {
  * 走 RC type 6 SendTouch（MotionEvent 全量序列化）。
  */
 @Composable
-private fun Trackpad(enabled: Boolean, vm: TvViewModel, palette: RemotePalette) {
+private fun Trackpad(enabled: Boolean, vm: TvViewModel, palette: RemotePalette, height: Dp = 200.dp) {
     var boxSize by remember { mutableStateOf(Offset(1f, 1f)) }
     var downTime by remember { mutableStateOf(0L) }
 
@@ -737,7 +844,7 @@ private fun Trackpad(enabled: Boolean, vm: TvViewModel, palette: RemotePalette) 
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .aspectRatio(16f / 9f)
+            .height(height)
             .clip(RoundedCornerShape(16.dp))
             .background(palette.keyFill)
             .onSizeChanged { boxSize = Offset(it.width.toFloat(), it.height.toFloat()) }

@@ -56,6 +56,9 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
+/** 单电源按钮点击结果：驱动 5s 倒计时遮罩与「重复点击」抖动提示 */
+enum class PowerTapResult { FIRED, COOLDOWN, FAILED }
+
 /**
  * 全局电视会话编排：连接、遥控、应用管理、APK 推送。
  *
@@ -77,8 +80,9 @@ class TvRepository(
         private const val SOCIAL_APP_ID = 1026
 
         /** 红外电源是「切换键」：冷却窗口内重复点击直接忽略，避免刚点亮又被第二帧关掉。
-         *  v1.8.26 日志实证曾在 3.7s 内连发两帧红外（21:42:57.840 / 21:43:01.497）。 */
-        private const val IR_COOLDOWN_MS = 10_000L
+         *  v1.8.26 日志实证曾在 3.7s 内连发两帧红外（21:42:57.840 / 21:43:01.497）。
+         *  v1.8.29 起与 UI 倒计时遮罩统一为 5s：遮罩可见多久，就屏蔽多久。 */
+        const val IR_COOLDOWN_MS = 5_000L
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -141,6 +145,10 @@ class TvRepository(
     private var screenStateJob: Job? = null
     /** 上次成功发射红外电源码的时刻（切换键冷却去抖） */
     private var lastIrFireAt = 0L
+
+    /** 电源键冷却截止时刻（epoch ms），UI 据此渲染 5s 倒计时遮罩；0=无冷却 */
+    private val _powerCooldownUntil = MutableStateFlow(0L)
+    val powerCooldownUntil: StateFlow<Long> = _powerCooldownUntil
     /** 连续拿不到 isScreenOn 的次数；≥2 判定本机固件不支持该 RPC，熔断轮询（进程级事实） */
     private var screenStatusFailures = 0
 
@@ -872,8 +880,22 @@ class TvRepository(
      *   红外不可用时才兜底 WOL/BLE/SPP。
      * 两条分支都是「切换」语义：亮屏按=关屏，息屏/关机按=亮屏，符合单电源键直觉。
      */
-    suspend fun power(): Boolean =
-        if (_tvScreenOn.value == true && _connection.value.isConnected) powerOff() else powerOn()
+    suspend fun power(): PowerTapResult {
+        val now = System.currentTimeMillis()
+        if (_powerCooldownUntil.value > now) {
+            Log.i(TAG, "电源键 5s 冷却中，忽略本次点击")
+            return PowerTapResult.COOLDOWN
+        }
+        val ok = if (_tvScreenOn.value == true && _connection.value.isConnected) {
+            powerOff()
+        } else {
+            powerOn()
+        }
+        if (!ok) return PowerTapResult.FAILED
+        // 发射成功即起遮罩：与红外切换键冷却同长，避免「看着能点却没发」的错位
+        _powerCooldownUntil.value = System.currentTimeMillis() + IR_COOLDOWN_MS
+        return PowerTapResult.FIRED
+    }
 
     /**
      * 电源键「关机/息屏」：对已连接的电视发送 POWER 键（DOWN+UP 经 RC 通道）。
@@ -958,11 +980,11 @@ class TvRepository(
             notice("没有可开机的电视记录，请先在首页连接一次", true)
             return@withContext false
         }
-        // 红外电源码是「切换键」：10s 内重复点击必须忽略。
+        // 红外电源码是「切换键」：5s 内重复点击必须忽略。
         // v1.8.26 日志实证曾在 3.7s 内连发两帧红外，第二帧会把刚点亮的电视又关掉。
         val now = System.currentTimeMillis()
         if (now - lastIrFireAt < IR_COOLDOWN_MS) {
-            notice("已发射红外开机信号，电源为切换键，请稍候（10s 内重复点击已忽略）")
+            notice("已发射红外开机信号，电源为切换键，请稍候（5s 内重复点击已忽略）")
             return@withContext true
         }
         // 新一轮唤醒先停掉上一轮的 BLE 广播/SPP 重试，避免多份广播并存
@@ -981,7 +1003,7 @@ class TvRepository(
             // 连接状态由 connect()/scheduleReconnect() 按网络可达性自行收敛（对齐原版：重连在后台跑）。
             _tvScreenOn.value = null
             Log.i(TAG, "红外电源切换键已发射（原版主路径），跳过 BLE/SPP 避免双电源切换键")
-            notice("已发送电源键（红外）。手机需对准电视；10s 内重复点击会被忽略。")
+            notice("已发送电源键（红外）。手机需对准电视；5s 内重复点击会被忽略。")
             return@withContext true
         }
 

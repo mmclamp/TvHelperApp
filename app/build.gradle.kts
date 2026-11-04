@@ -24,8 +24,8 @@ android {
         applicationId = "com.tvhelper.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 54
-        versionName = "1.8.28"
+        versionCode = 55
+        versionName = "1.8.29"
         buildConfigField("String", "BUILD_TIME", "\"$buildTime\"")
         vectorDrawables { useSupportLibrary = true }
     }
