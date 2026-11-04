@@ -129,39 +129,7 @@ fun RemoteScreen(vm: TvViewModel, onGoConnect: () -> Unit = {}) {
     val palette = remotePalette()
     var trackpadMode by remember { mutableStateOf(false) }
 
-    // 电源键 5s 冷却：倒计时遮罩 + 重复点击抖动提示
-    val cooldownUntil by vm.powerCooldownUntil.collectAsState()
-    var remainingMs by remember { mutableStateOf(0L) }
-    var shakeKey by remember { mutableStateOf(0) }
-    var shakeHint by remember { mutableStateOf(false) }
-    val shakeX = remember { Animatable(0f) }
-
-    LaunchedEffect(cooldownUntil) {
-        while (cooldownUntil > System.currentTimeMillis()) {
-            remainingMs = cooldownUntil - System.currentTimeMillis()
-            delay(80L)
-        }
-        remainingMs = 0L
-        shakeHint = false
-    }
-    LaunchedEffect(shakeKey) {
-        if (shakeKey == 0) return@LaunchedEffect
-        repeat(3) { i ->
-            shakeX.animateTo(if (i % 2 == 0) 10f else -10f, tween(45))
-            shakeX.animateTo(0f, tween(45))
-        }
-    }
-    LaunchedEffect(Unit) {
-        vm.powerTapEvent.collect { result ->
-            when (result) {
-                PowerTapResult.COOLDOWN -> {
-                    shakeHint = true
-                    shakeKey++
-                }
-                PowerTapResult.FIRED, PowerTapResult.FAILED -> shakeHint = false
-            }
-        }
-    }
+    // 电源键冷却状态收敛在 PowerButton 内部：倒计时遮罩只盖按钮本身，不再弹窗 / 全屏压暗。
 
     // 单屏布局：所有控件一页放完、不再滚动；方向键/触控板区用 weight 吃掉剩余高度并自适应尺寸
     Box(Modifier.fillMaxSize().background(palette.bg)) {
@@ -217,83 +185,46 @@ fun RemoteScreen(vm: TvViewModel, onGoConnect: () -> Unit = {}) {
             }
         }
 
-        if (remainingMs > 0L) {
-            PowerCooldownOverlay(
-                remainingMs = remainingMs,
-                shakeX = shakeX.value,
-                shakeHint = shakeHint,
-                palette = palette,
-                onTap = { vm.power() },
-            )
-        }
     }
 }
 
 /**
- * 电源键倒计时遮罩：发射后覆盖 5s，圆环 + 秒数；冷却中再次点击（点卡片或下方电源键）
- * 会触发卡片左右抖动并提示「5s 内重复点击已忽略」。遮罩本身不拦截其它按键的触摸，
- * 仅视觉压暗，避免 5s 内连方向键都用不了。
+ * 电源按钮「本体」上的倒计时遮罩：只盖住 48dp 圆钮，不弹窗、不压暗整页、不挡其它按键。
+ * 圆环是剩余时间进度，中央是秒数；冷却中点击遮罩仍走 vm.power() → COOLDOWN → 抖动提示。
  */
 @Composable
-private fun PowerCooldownOverlay(
-    remainingMs: Long,
-    shakeX: Float,
-    shakeHint: Boolean,
-    palette: RemotePalette,
-    onTap: () -> Unit,
-) {
+private fun PowerCooldownMask(remainingMs: Long, onClick: () -> Unit) {
     val seconds = ceil(remainingMs / 1000f).toInt().coerceAtLeast(1)
     val progress = (remainingMs.toFloat() / TvRepository.IR_COOLDOWN_MS).coerceIn(0f, 1f)
     Box(
         Modifier
-            .fillMaxSize()
-            .background(Color(0x99000000)),
+            .size(48.dp)
+            .clip(CircleShape)
+            .background(Color(0xC4101012))
+            .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Column(
-            Modifier
-                .offset(x = shakeX.dp)
-                .clip(RoundedCornerShape(24.dp))
-                .background(palette.panel)
-                .clickable(onClick = onTap)
-                .padding(horizontal = 32.dp, vertical = 24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Box(Modifier.size(88.dp), contentAlignment = Alignment.Center) {
-                androidx.compose.foundation.Canvas(Modifier.fillMaxSize()) {
-                    val stroke = 6.dp.toPx()
-                    val inset = stroke / 2f
-                    val arcSize = androidx.compose.ui.geometry.Size(size.width - stroke, size.height - stroke)
-                    val topLeft = Offset(inset, inset)
-                    val arcStyle = androidx.compose.ui.graphics.drawscope.Stroke(width = stroke)
-                    drawArc(
-                        color = palette.hairline, startAngle = -90f, sweepAngle = 360f,
-                        useCenter = false, topLeft = topLeft, size = arcSize, style = arcStyle,
-                    )
-                    drawArc(
-                        color = TvColors.danger, startAngle = -90f, sweepAngle = 360f * progress,
-                        useCenter = false, topLeft = topLeft, size = arcSize, style = arcStyle,
-                    )
-                }
-                Text(
-                    "$seconds",
-                    style = MaterialTheme.typography.headlineLarge,
-                    color = palette.okGlyph,
-                    fontWeight = FontWeight.Medium,
-                )
-            }
-            Text(
-                if (shakeHint) "5s 内重复点击已忽略" else "已发送电源键",
-                style = MaterialTheme.typography.titleSmall,
-                color = if (shakeHint) TvColors.danger else palette.okGlyph,
+        androidx.compose.foundation.Canvas(Modifier.fillMaxSize()) {
+            val stroke = 3.dp.toPx()
+            val inset = stroke / 2f
+            val arcSize = androidx.compose.ui.geometry.Size(size.width - stroke, size.height - stroke)
+            val topLeft = Offset(inset, inset)
+            val arcStyle = androidx.compose.ui.graphics.drawscope.Stroke(width = stroke)
+            drawArc(
+                color = Color.White.copy(alpha = 0.18f), startAngle = -90f, sweepAngle = 360f,
+                useCenter = false, topLeft = topLeft, size = arcSize, style = arcStyle,
             )
-            Text(
-                "电源是切换键，${seconds}s 后可再次操作",
-                style = MaterialTheme.typography.bodySmall,
-                color = palette.label,
+            drawArc(
+                color = TvColors.danger, startAngle = -90f, sweepAngle = 360f * progress,
+                useCenter = false, topLeft = topLeft, size = arcSize, style = arcStyle,
             )
         }
+        Text(
+            "$seconds",
+            style = MaterialTheme.typography.titleMedium,
+            color = Color.White,
+            fontWeight = FontWeight.Bold,
+        )
     }
 }
 
@@ -716,7 +647,7 @@ private fun LabeledKey(
  * 我们因 UDT 在息屏不断连、固件又不提供 isScreenOn，无法用连接态区分亮/息屏；
  * 分流下沉到仓库层 power()：明确亮屏走 UDT 注入，其余走红外切换键
  * （v1.8.26 真机实证唯一生效路径），红外不可用时自动兜底 WOL/BLE/SPP。
- * 电源是切换键：亮屏按=关屏、息屏/关机按=亮屏，仓库层 5s 冷却 + 遥控页倒计时遮罩防连点「开了又关」。
+ * 电源是切换键：亮屏按=关屏、息屏/关机按=亮屏，仓库层 5s 冷却 + 按钮本体倒计时遮罩防连点「开了又关」。
  */
 @Composable
 private fun PowerButton(vm: TvViewModel, palette: RemotePalette) {
@@ -743,19 +674,73 @@ private fun PowerButton(vm: TvViewModel, palette: RemotePalette) {
         }
     }
 
+    // 冷却状态只服务这一枚按钮：倒计时遮罩就地盖在圆钮上，不弹窗、不压暗整页。
+    val cooldownUntil by vm.powerCooldownUntil.collectAsState()
+    var remainingMs by remember { mutableStateOf(0L) }
+    var shakeKey by remember { mutableStateOf(0) }
+    var shakeHint by remember { mutableStateOf(false) }
+    val shakeX = remember { Animatable(0f) }
+
+    LaunchedEffect(cooldownUntil) {
+        while (cooldownUntil > System.currentTimeMillis()) {
+            remainingMs = cooldownUntil - System.currentTimeMillis()
+            delay(80L)
+        }
+        remainingMs = 0L
+        shakeHint = false
+    }
+    LaunchedEffect(shakeKey) {
+        if (shakeKey == 0) return@LaunchedEffect
+        repeat(3) { i ->
+            shakeX.animateTo(if (i % 2 == 0) 8f else -8f, tween(45))
+            shakeX.animateTo(0f, tween(45))
+        }
+    }
+    LaunchedEffect(Unit) {
+        vm.powerTapEvent.collect { result ->
+            when (result) {
+                PowerTapResult.COOLDOWN -> {
+                    shakeHint = true
+                    shakeKey++
+                }
+                PowerTapResult.FIRED, PowerTapResult.FAILED -> shakeHint = false
+            }
+        }
+    }
+
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        RoundButton(
-            onPress = {},
-            onRelease = { firePower() },
-            enabled = true,
-            size = 48,
-            container = TvColors.danger.copy(alpha = 0.16f),
-            contentColor = TvColors.danger,
-            borderColor = TvColors.danger.copy(alpha = 0.4f),
-            pressColor = TvColors.danger,
-        ) { PowerIcon(tint = TvColors.danger, modifier = Modifier.size(24.dp)) }
+        Box(
+            Modifier
+                .size(48.dp)
+                .offset(x = shakeX.value.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            RoundButton(
+                onPress = {},
+                onRelease = { firePower() },
+                enabled = true,
+                size = 48,
+                container = TvColors.danger.copy(alpha = 0.16f),
+                contentColor = TvColors.danger,
+                borderColor = TvColors.danger.copy(alpha = 0.4f),
+                pressColor = TvColors.danger,
+            ) { PowerIcon(tint = TvColors.danger, modifier = Modifier.size(24.dp)) }
+
+            if (remainingMs > 0L) {
+                PowerCooldownMask(remainingMs = remainingMs, onClick = { firePower() })
+            }
+        }
         Spacer(Modifier.height(2.dp))
-        Text("电源", style = MaterialTheme.typography.labelSmall, color = palette.label)
+        // 冷却/忽略提示直接占用原来的「电源」标签位，不额外弹层
+        Text(
+            text = when {
+                shakeHint -> "5s 内忽略"
+                remainingMs > 0L -> "已发送 ${ceil(remainingMs / 1000f).toInt().coerceAtLeast(1)}s"
+                else -> "电源"
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = if (shakeHint) TvColors.danger else palette.label,
+        )
     }
 }
 

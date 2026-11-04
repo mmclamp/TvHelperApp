@@ -30,7 +30,6 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.AlertDialog
@@ -43,7 +42,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -670,44 +668,27 @@ private fun PinnedGrid(
                         color = MaterialTheme.colorScheme.surface,
                         tonalElevation = 1.dp,
                     ) {
-                        Box {
-                            Column(
-                                Modifier
-                                    .padding(8.dp)
-                                    .fillMaxWidth(),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center,
-                            ) {
-                                AppIconBox(
-                                    iconBytes = icons[app.packageName],
-                                    initial = app.displayName.take(1),
-                                    size = 40,
-                                )
-                                Spacer(Modifier.height(6.dp))
-                                Text(
-                                    app.displayName,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    textAlign = TextAlign.Center,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis,
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                )
-                            }
-                            // 长按的可见替代入口：右上角 ⋮（触控区补足 48dp）
-                            Box(
-                                Modifier
-                                    .align(Alignment.TopEnd)
-                                    .minimumInteractiveComponentSize()
-                                    .clickable(onClick = { onLongPress(app) }),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Icon(
-                                    Icons.Default.MoreVert,
-                                    contentDescription = "更多操作",
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
-                                    modifier = Modifier.size(18.dp),
-                                )
-                            }
+                        Column(
+                            Modifier
+                                .padding(8.dp)
+                                .fillMaxWidth(),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
+                        ) {
+                            AppIconBox(
+                                iconBytes = icons[app.packageName],
+                                initial = app.displayName.take(1),
+                                size = 40,
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                app.displayName,
+                                style = MaterialTheme.typography.labelSmall,
+                                textAlign = TextAlign.Center,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
                         }
                     }
                 }
