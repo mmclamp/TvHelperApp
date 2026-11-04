@@ -315,6 +315,15 @@ class TvViewModel(
     }
 
     /**
+     * 单电源按钮统一入口：对齐原版「一个按钮，按下瞬间按连接态分流」。
+     * 明确亮屏走 UDT 注入 POWER（关屏）；其余情况（含本机固件不支持 isScreenOn 的 unknown 态）
+     * 走红外切换键（亮/息/关机都能切）+ 红外不可用时兜底 BLE/SPP/WOL。
+     */
+    fun power() {
+        viewModelScope.launch { repo.power() }
+    }
+
+    /**
      * 电源键「开机」：电视息屏/关机、RC 已断时调用。
      * 前置条件：本机需授予蓝牙权限（BLE 广播开机用），否则该路径被跳过——由仓库在提示里说明。
      */

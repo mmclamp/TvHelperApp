@@ -21,19 +21,22 @@ data class TvDevice(
 }
 
 /**
- * 电视网络可达性状态（电源键行为依据）。
+ * 电视网络可达性状态（仅用于连接指示，不再驱动电源按钮 UI）。
  *
  * 重要语义（2026-11-01 日志实证）：电视息屏/待机时 RC/UDT 网络仍然全通、getVolume 正常响应、
  * 注入回 success 但屏幕不亮——协议层无法区分"亮屏"与"息屏"。因此本枚举只描述
  * **网络可达性**，绝不断言电视屏幕开关：
- * - [REACHABLE]：网络可达（已连接）。亮屏时发电源键=关机；息屏时注入被固件丢弃（无效）。
- * - [UNREACHABLE]：网络不可达（关机/深待机，或 RC 断线重连窗口期）。电源键应触发唤醒序列。
- * - [WAKING]：唤醒序列进行中，等待电视网络恢复。
+ * - [REACHABLE]：网络可达（已连接）。
+ * - [UNREACHABLE]：网络不可达（关机/深待机，或 RC 断线重连窗口期）。
+ *
+ * 2026-11-04：删除原 WAKING「开机中」中间态。原版 `MiboxRCActivity.java:621` 只有**一个**
+ * 电源按钮、按下即完成（`reconnectDevice(30)` 在后台跑，UI 不等待）；且红外是瞬时切换键，
+ * 发射完动作就结束了，不存在"开机中"阶段。中间态只会让 UI 卡住并禁用按钮。
+ * 电源键行为改由 [com.tvhelper.app.data.TvRepository.power] 在按下瞬间分流。
  */
 enum class TvPowerState {
     REACHABLE,
     UNREACHABLE,
-    WAKING,
 }
 
 enum class ConnectionPhase {

@@ -31,13 +31,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -57,7 +55,6 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.tvhelper.app.data.ConnectionState
-import com.tvhelper.app.data.TvPowerState
 import com.tvhelper.app.protocol.rc.RcTouchCodec
 import com.tvhelper.app.protocol.rc.TvKey
 import com.tvhelper.app.ui.common.PillButton
@@ -122,12 +119,8 @@ fun RemoteScreen(vm: TvViewModel, onGoConnect: () -> Unit = {}) {
     val tvVolume by vm.tvVolume.collectAsState()
     val tvVolumeMax by vm.tvVolumeMax.collectAsState()
     val tvMuted by vm.tvMuted.collectAsState()
-    val tvPowerState by vm.tvPowerState.collectAsState()
-    val tvScreenOn by vm.tvScreenOn.collectAsState()
-    val lastDevice by vm.lastDevice.collectAsState()
     val connected = connection.isConnected
-    // 电源键可用性：已连接 / 或记住了设备（息屏关机态仍可点开机）
-    val deviceKnown = connected || lastDevice != null
+    // 单电源按钮不依赖连接/屏幕状态：分流下沉到仓库层 power()，按钮始终可用（对齐原版）
     val palette = remotePalette()
     var trackpadMode by remember { mutableStateOf(false) }
 
@@ -184,9 +177,6 @@ fun RemoteScreen(vm: TvViewModel, onGoConnect: () -> Unit = {}) {
                     QuickRow(
                         vm = vm,
                         enabled = connected,
-                        powerState = tvPowerState,
-                        screenOn = tvScreenOn,
-                        deviceKnown = deviceKnown,
                         muted = tvMuted,
                         palette = palette,
                     )
@@ -292,9 +282,6 @@ private fun ModeChip(text: String, selected: Boolean, onClick: () -> Unit, palet
 private fun QuickRow(
     vm: TvViewModel,
     enabled: Boolean,
-    powerState: TvPowerState,
-    screenOn: Boolean?,
-    deviceKnown: Boolean,
     muted: Boolean?,
     palette: RemotePalette,
 ) {
@@ -319,7 +306,7 @@ private fun QuickRow(
         Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceEvenly,
     ) {
-        PowerCluster(vm = vm, powerState = powerState, screenOn = screenOn, deviceKnown = deviceKnown, palette = palette)
+        PowerButton(vm = vm, palette = palette)
         LabeledKey(
             label = muteLabel, enabled = enabled, palette = palette,
             container = muteContainer,
@@ -614,28 +601,21 @@ private fun LabeledKey(
 }
 
 /**
- * 电源区：按「网络可达性 × 屏幕亮灭」分流两个动作。协议层无法靠网络区分亮屏/息屏（二者都通），
- * 必须靠 getDeviceStatus 的 isScreenOn 判断——这是原版 RemoteDeviceStatus 的做法。
- * - 电源（红）：已连(REACHABLE)且屏幕亮(screenOn!=false)时显示，发 KEYCODE_POWER 切换键（亮屏→关机/熄屏）。
- * - 打开（中性）：断网(UNREACHABLE)/唤醒中(WAKING)时显示；或已连但屏幕已熄(screenOn==false，息屏待机，
- *   注入键被固件静默丢弃)时显示。点击后**立即发红外**（原版第一主力，v1.8.26 真机实证唯一生效路径，
- *   点击到发射 ~200ms）；只有红外不可用时才兜底启用 WOL/BLE/经典蓝牙。
- *   红外是电源切换键，仓库层有 10s 冷却去抖，防连点「开了又关」。
- *   屏幕态未知(screenOn==null，本机固件不提供 isScreenOn)时两者都显示兜底。
+ * 单电源按钮（对齐原版 `MiboxRCActivity.java:621` 唯一按钮绑定 + `class m` 内部分流）。
+ *
+ * 原版只有一个电源键：未连接 → powerOn() 四路唤醒（红外第一）+ 后台 reconnectDevice(30)；
+ * 已连接 → p(26) 注入 POWER 切换屏。按钮本身没有状态文案、没有「开机中」中间态、不禁用。
+ *
+ * 我们因 UDT 在息屏不断连、固件又不提供 isScreenOn，无法用连接态区分亮/息屏；
+ * 分流下沉到仓库层 power()：明确亮屏走 UDT 注入，其余走红外切换键
+ * （v1.8.26 真机实证唯一生效路径），红外不可用时自动兜底 WOL/BLE/SPP。
+ * 电源是切换键：亮屏按=关屏、息屏/关机按=亮屏，仓库层 10s 冷却防连点「开了又关」。
  */
 @Composable
-private fun PowerCluster(
-    vm: TvViewModel,
-    powerState: TvPowerState,
-    screenOn: Boolean?,
-    deviceKnown: Boolean,
-    palette: RemotePalette,
-) {
+private fun PowerButton(vm: TvViewModel, palette: RemotePalette) {
     val context = LocalContext.current
-    var confirmOff by remember { mutableStateOf(false) }
-
-    // 蓝牙权限只影响 BLE 广播/经典蓝牙两路；红外（主力）无需运行时权限。
-    // 关键修复：不得用权限弹窗阻塞唤醒，否则红外的「息屏/关机也能亮屏」优势会被拖住甚至丢失。
+    // 蓝牙权限只影响红外失败后的 BLE/SPP 兜底；红外（主力）无需任何运行时权限。
+    // 非阻塞申请：不得用权限弹窗挡住电源键。
     val btPerms = if (Build.VERSION.SDK_INT >= 31) listOf(
         Manifest.permission.BLUETOOTH_ADVERTISE,
         Manifest.permission.BLUETOOTH_CONNECT,
@@ -643,13 +623,11 @@ private fun PowerCluster(
     ) else emptyList()
     val permLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
-    ) { /* 权限结果仅影响后续 BLE/SPP 补充路径；红外已在本轮发出，不重复唤醒 */ }
+    ) { /* 权限结果仅影响后续兜底路径；本轮电源键已发出，不重复发送 */ }
 
-    fun tryPowerOn() {
-        // 红外立即发射（不依赖网络/蓝牙/权限），息屏、待机、关机均可亮屏；
-        // 仓库层 10s 冷却会忽略连点（电源为切换键，重复发会开了又关）
-        vm.powerOn()
-        // 顺带申请蓝牙权限，供本轮之后的 BLE/SPP 补充路径生效（非阻塞）
+    fun firePower() {
+        // 单按钮：按下瞬间由仓库层分流（注入 POWER / 红外切换 / 兜底唤醒）
+        vm.power()
         if (btPerms.isNotEmpty() && btPerms.any {
                 ContextCompat.checkSelfPermission(context, it) != android.content.pm.PackageManager.PERMISSION_GRANTED
             }
@@ -658,112 +636,19 @@ private fun PowerCluster(
         }
     }
 
-    val canPower = deviceKnown && powerState == TvPowerState.REACHABLE && screenOn != false
-    val waking = powerState == TvPowerState.WAKING
-    // 「打开」在以下情况出现：断网/未连(UNREACHABLE)、唤醒中(WAKING)、
-    // 或已连但屏幕已熄(screenOn==false，息屏待机注入被丢弃，必须走 BLE/蓝牙唤醒)。
-    // 屏幕态未知(screenOn==null，查询不支持)时也显示，作为兜底确保唤醒入口始终可用。
-    val canWake = deviceKnown && (powerState != TvPowerState.REACHABLE || screenOn != true)
-
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        if (canPower) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                RoundButton(
-                    onPress = {},
-                    onRelease = { confirmOff = true },
-                    enabled = true,
-                    size = 52,
-                    container = TvColors.danger.copy(alpha = 0.16f),
-                    contentColor = TvColors.danger,
-                    borderColor = TvColors.danger.copy(alpha = 0.4f),
-                    pressColor = TvColors.danger,
-                ) { PowerIcon(tint = TvColors.danger, modifier = Modifier.size(24.dp)) }
-                Spacer(Modifier.height(4.dp))
-                Text("电源", style = MaterialTheme.typography.labelSmall, color = palette.label)
-            }
-        }
-        if (canPower && canWake) Spacer(Modifier.width(10.dp))
-        if (canWake) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                RoundButton(
-                    onPress = {},
-                    onRelease = { if (!waking) tryPowerOn() },
-                    enabled = !waking,
-                    size = 52,
-                    container = palette.keyFill,
-                    contentColor = palette.keyGlyph,
-                    pressColor = palette.keyFillPressed,
-                ) { OpenIcon(tint = palette.keyGlyph, modifier = Modifier.size(24.dp)) }
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    if (waking) "开机中…" else "打开",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = palette.label,
-                )
-            }
-        }
-    }
-
-    if (confirmOff) {
-        AlertDialog(
-            onDismissRequest = { confirmOff = false },
-            title = { Text("发送电源键") },
-            text = {
-                Text(
-                    "电源键是「开/关屏」切换键：\n" +
-                        "· 电视亮屏时：发送后关机/熄屏；\n" +
-                        "· 电视息屏/待机时：注入键会被固件静默丢弃（无效果），请改用「打开」按钮；\n" +
-                        "· 电视已关机（网络断开）：电源键发不出去，请用「打开」按钮。\n" +
-                        "「打开」会立即发红外电源码（原版主路径，手机需对准电视），红外不可用时才自动尝试 BLE/蓝牙/WOL。" +
-                        "电源为切换键，点一次即可，10s 内重复点击会被忽略。",
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = { confirmOff = false; vm.powerOff() }) { Text("发送") }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmOff = false }) { Text("取消") }
-            },
-        )
-    }
-}
-
-/** 自绘「打开/唤醒」图标：圆环 + 向上箭头（与电源键区分） */
-@Composable
-private fun OpenIcon(tint: Color, modifier: Modifier = Modifier) {
-    androidx.compose.foundation.Canvas(modifier = modifier) {
-        val stroke = size.minDimension * 0.1f
-        val cx = size.width / 2f
-        val cy = size.height / 2f
-        val r = (size.minDimension - stroke) / 2f
-        val arc = androidx.compose.ui.graphics.drawscope.Stroke(
-            width = stroke,
-            cap = androidx.compose.ui.graphics.StrokeCap.Round,
-        )
-        drawCircle(color = tint, radius = r, style = arc)
-        val topY = cy - r * 0.42f
-        val botY = cy + r * 0.34f
-        drawLine(
-            tint,
-            androidx.compose.ui.geometry.Offset(cx, botY),
-            androidx.compose.ui.geometry.Offset(cx, topY),
-            strokeWidth = stroke,
-            cap = androidx.compose.ui.graphics.StrokeCap.Round,
-        )
-        drawLine(
-            tint,
-            androidx.compose.ui.geometry.Offset(cx, topY),
-            androidx.compose.ui.geometry.Offset(cx - r * 0.26f, topY + r * 0.3f),
-            strokeWidth = stroke,
-            cap = androidx.compose.ui.graphics.StrokeCap.Round,
-        )
-        drawLine(
-            tint,
-            androidx.compose.ui.geometry.Offset(cx, topY),
-            androidx.compose.ui.geometry.Offset(cx + r * 0.26f, topY + r * 0.3f),
-            strokeWidth = stroke,
-            cap = androidx.compose.ui.graphics.StrokeCap.Round,
-        )
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        RoundButton(
+            onPress = {},
+            onRelease = { firePower() },
+            enabled = true,
+            size = 52,
+            container = TvColors.danger.copy(alpha = 0.16f),
+            contentColor = TvColors.danger,
+            borderColor = TvColors.danger.copy(alpha = 0.4f),
+            pressColor = TvColors.danger,
+        ) { PowerIcon(tint = TvColors.danger, modifier = Modifier.size(24.dp)) }
+        Spacer(Modifier.height(4.dp))
+        Text("电源", style = MaterialTheme.typography.labelSmall, color = palette.label)
     }
 }
 
