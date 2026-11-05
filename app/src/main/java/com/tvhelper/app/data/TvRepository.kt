@@ -888,8 +888,11 @@ class TvRepository(
      *
      * 我们过去只测了 30612/6093/9093（息屏也全通），误以为「协议层无法区分亮/息屏」，
      * 于是 v1.8.31 用本地行动记账推断屏幕状态 —— 能工作但会与实体遥控器/自动休眠失同步。
-     * v1.8.32 起补上 :6095 探活：通=电视主系统在线→注入 POWER 关机；不通→红外唤醒。
-     * 本地推断只在 6095 探测不可用时兜底，保证不开放该端口的机型行为不比 v1.8.31 更差。
+     * v1.8.32 起补上 :6095 探活：通=电视主系统在线→注入 POWER 关机；明确不通→红外唤醒。
+     * 本地推断只在 6095 探测本身不可用时兜底。v1.8.33 修正两个真机暴露的问题：
+     * ① 「明确不通」曾也走兜底，息屏+过期记账会误注入；② 动作后只探 1 次太早，
+     * 关机还没完成就记成亮屏。现在改为循环探到期望状态（对齐原版 isAliveAfterPower）。
+     * 22:41 真机日志已证实 6095：息屏=false → 红外唤醒后 1.5s=true → 注入 POWER 后最终=false。
      *
      * 红外码只负责唤醒（原版埋点 `PowerOnIr`，MilinkActivity:441），亮屏时不会关屏，
      * 所以「开机=红外、关机=网络注入」两条路径必须分开。v1.8.28~30 曾把 `_tvScreenOn`
@@ -906,14 +909,20 @@ class TvRepository(
         // 一次短超时 TCP 探活，拿电视主系统的真实现状（对齐原版 isAlive）
         val alive = host?.let { probeControlService(it) }
         val localOn = _tvScreenOn.value == true
-        // 6095 通 = 确定可注入；探测不可用时退回本地推断，兼容固件不开放该端口的情况
-        val inject = connected && (alive == true || (alive != true && localOn))
+        // 6095 是电视端维护的实时状态：通=主系统在线（该注入）；明确不通=已挂起（必须唤醒）。
+        // 只有「探测本身不可用」（无 host / 网络异常）才回退本地推断，绝不让过期记账盖掉真实信号。
+        // v1.8.32 曾把「明确不通」也当兜底：息屏且 localOn=true 时会误走注入 → 下次开不了机。
+        val inject = connected && when (alive) {
+            true -> true
+            false -> false
+            null -> localOn
+        }
         val action = if (inject) "UDT 注入关机" else "红外唤醒"
         Log.i(TAG, "电源键分流：connected=$connected alive6095=$alive localScreenOn=${_tvScreenOn.value} → $action")
         val ok = if (inject) powerOff() else powerOn()
         if (!ok) return PowerTapResult.FAILED
-        // 动作后异步复探：留下取证日志，并把本地推断拉回真实状态（原版 isAliveAfterPower 思路）
-        if (host != null) probeAfterAction(host, action, applyState = inject)
+        // 动作后循环复探：留下取证日志，并把本地推断拉回真实状态（原版 isAliveAfterPower 思路）
+        if (host != null) probeAfterAction(host, action, expectAlive = !inject)
         // 发射成功即起遮罩：与冷却同长，避免「看着能点却没发」的错位
         _powerCooldownUntil.value = System.currentTimeMillis() + IR_COOLDOWN_MS
         return PowerTapResult.FIRED
@@ -932,21 +941,25 @@ class TvRepository(
         }.getOrDefault(false).also { runCatching { socket.close() } }
     }
 
-    /** 动作后异步复探 6095，校正本地屏幕推断并留下取证日志；不阻塞本次点击。 */
-    private fun probeAfterAction(host: String, tag: String, applyState: Boolean) {
+    /**
+     * 动作后异步循环复探 6095，直到出现期望状态或超时，用实测值校正本地推断并留下取证日志。
+     * 对齐原版变体页 `isAliveAfterPower` 的循环确认：电视开机/息屏都有数秒延迟，
+     * 只探一次会把「还没关完」误记成「仍亮屏」，进而让下一次点击走错分支（22:41 日志实证）。
+     */
+    private fun probeAfterAction(host: String, tag: String, expectAlive: Boolean) {
         scope.launch {
-            delay(1_500L)
+            delay(1_000L)
             var alive = probeControlService(host)
-            if (tag == "红外唤醒" && !alive) {
-                // 电视开机较慢，最多再等 ~10s 观察 6095 是否随主系统起来
-                for (i in 0 until 10) {
-                    delay(1_000L)
-                    alive = probeControlService(host)
-                    if (alive) break
-                }
+            var tries = 1
+            // 开机比息屏慢；两条路径都持续探到期望值即提前结束
+            val maxTries = if (expectAlive) 12 else 8
+            while (tries < maxTries && alive != expectAlive) {
+                delay(1_000L)
+                alive = probeControlService(host)
+                tries++
             }
-            Log.i(TAG, "$tag 后 :6095 探活=$alive")
-            if (applyState) _tvScreenOn.value = alive
+            Log.i(TAG, "$tag 后 :6095 探活=$alive（期望=$expectAlive，共探测 $tries 次）")
+            _tvScreenOn.value = alive
         }
     }
 
