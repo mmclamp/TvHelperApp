@@ -92,6 +92,10 @@ class TvRepository(
 
         /** 探活连接超时。点击电源键只增加这段延迟，绝不阻塞其它按键。 */
         const val CONTROL_PROBE_TIMEOUT_MS = 400
+
+        /** 主控服务状态轮询间隔：让电源按钮颜色跟随电视真实开关机自动切换。
+         *  一次探活只是 400ms 超时的 TCP connect，开销极低；不禁用按钮、不要求用户等待。 */
+        const val CONTROL_POLL_INTERVAL_MS = 3_000L
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -158,6 +162,20 @@ class TvRepository(
     /** 电源键冷却截止时刻（epoch ms），UI 据此渲染 3s 倒计时遮罩；0=无冷却 */
     private val _powerCooldownUntil = MutableStateFlow(0L)
     val powerCooldownUntil: StateFlow<Long> = _powerCooldownUntil
+
+    /** 电视主控服务 :6095 的实时状态：true=已开机（主系统在线）/ false=待机或未开机 / null=尚未探测。
+     *  这是电源按钮着色的唯一权威信号；连接状态仍只作 REACHABLE/UNREACHABLE 指示，两者互不混淆。 */
+    private val _controlAlive = MutableStateFlow<Boolean?>(null)
+    val controlAlive: StateFlow<Boolean?> = _controlAlive
+
+    /** 非阻塞轻提示：红外唤醒后长时间没探到主系统起来 → 提示可能没对准。
+     *  只提示，不锁按钮、不禁用点击、不自动补发红外。 */
+    private val _powerHints = MutableSharedFlow<String>(extraBufferCapacity = 4)
+    val powerHints: SharedFlow<String> = _powerHints
+
+    /** 动作后复探的单一 Job：后一次点击取代前一次，避免并发写状态互相覆盖（不阻塞 UI） */
+    private var controlProbeJob: Job? = null
+
     /** 连续拿不到 isScreenOn 的次数；≥2 判定本机固件不支持该 RPC，熔断轮询（进程级事实） */
     private var screenStatusFailures = 0
 
@@ -182,6 +200,18 @@ class TvRepository(
     val themeMode: Flow<SettingsStore.ThemeMode> = settings.themeMode
 
     val accentColor: Flow<SettingsStore.AccentColor> = settings.accentColor
+
+    init {
+        // 常驻低频探活：电视被实体遥控器开关机、自动休眠时，按钮颜色也能自己跟上。
+        // 只在有目标 IP 时发起连接；纯后台观察，不参与任何 UI 禁用或等待逻辑。
+        scope.launch {
+            while (isActive) {
+                val host = _connection.value.device?.host ?: _pairing.value.host
+                if (!host.isNullOrBlank()) probeControlService(host)
+                delay(CONTROL_POLL_INTERVAL_MS)
+            }
+        }
+    }
 
     fun setAccentColor(color: SettingsStore.AccentColor) {
         scope.launch { settings.setAccentColor(color) }
@@ -935,19 +965,25 @@ class TvRepository(
      */
     private suspend fun probeControlService(host: String): Boolean = withContext(Dispatchers.IO) {
         val socket = Socket()
-        runCatching {
+        val alive = runCatching {
             socket.connect(InetSocketAddress(host, CONTROL_PORT), CONTROL_PROBE_TIMEOUT_MS)
             socket.isConnected
-        }.getOrDefault(false).also { runCatching { socket.close() } }
+        }.getOrDefault(false)
+        runCatching { socket.close() }
+        // 所有探活入口（点击分流 / 动作后复探 / 常驻轮询）统一写入，按钮颜色始终跟真实现状
+        _controlAlive.value = alive
+        alive
     }
 
     /**
      * 动作后异步循环复探 6095，直到出现期望状态或超时，用实测值校正本地推断并留下取证日志。
      * 对齐原版变体页 `isAliveAfterPower` 的循环确认：电视开机/息屏都有数秒延迟，
      * 只探一次会把「还没关完」误记成「仍亮屏」，进而让下一次点击走错分支（22:41 日志实证）。
+     * 全程纯后台：按钮始终可点，用户想重按随时能按，这里既不禁用 UI 也不要求等待。
      */
     private fun probeAfterAction(host: String, tag: String, expectAlive: Boolean) {
-        scope.launch {
+        controlProbeJob?.cancel()
+        controlProbeJob = scope.launch {
             delay(1_000L)
             var alive = probeControlService(host)
             var tries = 1
@@ -960,6 +996,12 @@ class TvRepository(
             }
             Log.i(TAG, "$tag 后 :6095 探活=$alive（期望=$expectAlive，共探测 $tries 次）")
             _tvScreenOn.value = alive
+            // 红外唤醒后始终没等到主系统：只提示「可能没对准」，完整引导交给 notice。
+            // 绝不自动补发第二帧（会「开了又关」），也不锁定按钮，用户对准后直接再按即可。
+            if (expectAlive && !alive) {
+                _powerHints.tryEmit("没对准？")
+                notice("没检测到电视开机，可能红外没对准；对准电视红外接收窗后可直接再按电源键重试")
+            }
         }
     }
 

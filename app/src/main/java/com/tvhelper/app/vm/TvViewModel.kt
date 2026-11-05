@@ -67,6 +67,12 @@ class TvViewModel(
     /** 电源键冷却截止时刻（驱动遥控页 3s 倒计时遮罩） */
     val powerCooldownUntil: StateFlow<Long> = repo.powerCooldownUntil
 
+    /** 电视真实开机/待机状态（:6095 探活）：驱动电源按钮两色，不驱动连接状态 UI */
+    val controlAlive: StateFlow<Boolean?> = repo.controlAlive
+
+    /** 非阻塞的电源轻提示（如「没对准？」），显示在按钮标签位，绝不锁按钮 */
+    val powerHint: SharedFlow<String> = repo.powerHints
+
     private val _powerTapEvent = MutableSharedFlow<PowerTapResult>(extraBufferCapacity = 8)
 
     /** 每次点击电源键的结果：FIRED=发射成功 / COOLDOWN=冷却中（触发抖动）/ FAILED=无设备或发射失败 */

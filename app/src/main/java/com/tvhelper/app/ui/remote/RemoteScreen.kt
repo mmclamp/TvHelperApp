@@ -644,11 +644,12 @@ private fun LabeledKey(
  * 原版只有一个电源键：未连接 → powerOn() 四路唤醒（红外第一）+ 后台 reconnectDevice(30)；
  * 已连接 → p(26) 注入 POWER 切换屏。按钮本身没有状态文案、没有「开机中」中间态、不禁用。
  *
- * 我们因 UDT 在息屏不断连、固件又不提供 isScreenOn，无法用连接态区分亮/息屏；
- * 分流下沉到仓库层 power()：明确亮屏走 UDT 注入，其余走红外切换键
- * （v1.8.26 真机实证唯一生效路径），红外不可用时自动兜底 WOL/BLE/SPP。
- * 分流由仓库层本地屏幕状态机决定：推断亮屏且已连 → 网络注入关机；其余 → 红外开机码唤醒。
- * 仓库层 3s 冷却 + 按钮本体倒计时遮罩防连点「开了又关」。
+ * 分流下沉到仓库层 power()，由 :6095 主控服务探活实时决定：通 → UDT 注入 POWER 关机；
+ * 不通 → 红外开机码唤醒（v1.8.26 真机实证唯一生效路径），红外不可用才兜底 WOL/BLE/SPP。
+ *
+ * 按钮本体直接显示这个状态：已开机=亮红实心、未开机=中性灰。状态由电视端维护、低频探活跟随，
+ * 不用本地记账、不显示「开机中」中间态、不禁用、不要求用户等待。3s 遮罩仅防连点「开了又关」；
+ * 唤醒没生效时只给「没对准？」轻提示，用户对准后随时可以再按。
  */
 @Composable
 private fun PowerButton(vm: TvViewModel, palette: RemotePalette) {
@@ -674,6 +675,11 @@ private fun PowerButton(vm: TvViewModel, palette: RemotePalette) {
             permLauncher.launch(btPerms.toTypedArray())
         }
     }
+
+    // 按钮颜色由 :6095 实时状态驱动：亮红=已开机（点按关机）、中性灰=未开机（点按唤醒）。
+    // 刻意不用 online 绿，避免与 RemoteHeader 的「连接在线」混淆 —— 连接不等于开机。
+    val alive by vm.controlAlive.collectAsState()
+    var hintText by remember { mutableStateOf<String?>(null) }
 
     // 冷却状态只服务这一枚按钮：倒计时遮罩就地盖在圆钮上，不弹窗、不压暗整页。
     val cooldownUntil by vm.powerCooldownUntil.collectAsState()
@@ -708,6 +714,31 @@ private fun PowerButton(vm: TvViewModel, palette: RemotePalette) {
             }
         }
     }
+    // 唤醒没生效：只在标签位给一句短提示，5s 后自动消失。按钮全程可点、不锁、不等待。
+    LaunchedEffect(Unit) {
+        vm.powerHint.collect {
+            hintText = it
+            delay(5_000L)
+            hintText = null
+        }
+    }
+
+    // 三态配色：true=已开机（亮红实心）/ false=未开机（中性灰）/ null=尚未探到（沿用淡红）
+    val container = when (alive) {
+        true -> TvColors.danger
+        false -> palette.keyFill
+        null -> TvColors.danger.copy(alpha = 0.16f)
+    }
+    val glyph = when (alive) {
+        true -> Color.White
+        false -> TvColors.danger.copy(alpha = 0.8f)
+        null -> TvColors.danger
+    }
+    val border = when (alive) {
+        true -> TvColors.danger
+        false -> palette.hairline
+        null -> TvColors.danger.copy(alpha = 0.4f)
+    }
 
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Box(
@@ -721,11 +752,11 @@ private fun PowerButton(vm: TvViewModel, palette: RemotePalette) {
                 onRelease = { firePower() },
                 enabled = true,
                 size = 48,
-                container = TvColors.danger.copy(alpha = 0.16f),
-                contentColor = TvColors.danger,
-                borderColor = TvColors.danger.copy(alpha = 0.4f),
+                container = container,
+                contentColor = glyph,
+                borderColor = border,
                 pressColor = TvColors.danger,
-            ) { PowerIcon(tint = TvColors.danger, modifier = Modifier.size(24.dp)) }
+            ) { PowerIcon(tint = glyph, modifier = Modifier.size(24.dp)) }
 
             if (remainingMs > 0L) {
                 PowerCooldownMask(remainingMs = remainingMs, onClick = { firePower() })
@@ -737,10 +768,11 @@ private fun PowerButton(vm: TvViewModel, palette: RemotePalette) {
             text = when {
                 shakeHint -> "3s 内忽略"
                 remainingMs > 0L -> "已发送 ${ceil(remainingMs / 1000f).toInt().coerceAtLeast(1)}s"
+                hintText != null -> hintText!!
                 else -> "电源"
             },
             style = MaterialTheme.typography.labelSmall,
-            color = if (shakeHint) TvColors.danger else palette.label,
+            color = if (shakeHint || hintText != null) TvColors.danger else palette.label,
         )
     }
 }
